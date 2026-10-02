@@ -1,3 +1,8 @@
+//! Command admission and execution.
+//!
+//! This module applies the command registry, root, environment, timeout, and
+//! output limits before starting a child process. Arguments are passed to the
+//! configured executable directly; the OS process group/tree is managed here.
 use crate::{config::Config, mcp::Fault};
 use cap_std::fs::Dir;
 use serde::{Deserialize, Serialize};
@@ -43,6 +48,9 @@ fn check_argument_path(config: &Config, cwd: &Path, argument: &str) -> Result<()
             json!({"argument": argument}),
         )
     };
+    // Reject path-like values outside the roots when they can be resolved.
+    // This is a conservative check; it cannot sandbox paths interpreted inside
+    // an executable's own config files or embedded argument syntax.
     for value in [
         Some(argument),
         argument.split_once('=').map(|(_, value)| value),
@@ -154,6 +162,7 @@ pub fn admitted(
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
+    // Do not leak the server's full environment into a launched program.
     command.env_clear();
     for name in &config.environment.pass {
         if let Some(value) = std::env::var_os(name) {

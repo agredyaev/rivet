@@ -1,3 +1,7 @@
+//! Root-confined file operations exposed by the MCP tools.
+//!
+//! Paths are opened relative to the configured directory capabilities. Writes
+//! reject final symlinks; overwrites stage a complete file before installing it.
 use crate::{config::Config, mcp::Fault};
 use cap_std::fs::{Dir, OpenOptions, OpenOptionsExt};
 use serde::Deserialize;
@@ -260,6 +264,7 @@ fn atomic_install(
     content: &[u8],
     permissions: Option<cap_std::fs::Permissions>,
 ) -> Result<(), Fault> {
+    // Stage beside the destination so rename installs complete contents at once.
     let temp = format!(
         ".rivet-{}-{}",
         std::process::id(),

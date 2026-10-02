@@ -1,3 +1,7 @@
+//! Lifecycle and bounded output capture for long-running child processes.
+//!
+//! The table retains a configured number of process entries. Each output stream
+//! stores a capped prefix while tracking total bytes for offset-based reads.
 use crate::{
     commands::{CommandRequest, admitted, terminate},
     config::Config,
@@ -136,6 +140,7 @@ impl ProcessTable {
         });
         let id = {
             let mut entries = self.entries.lock().unwrap();
+            // Reclaim the oldest completed entry before refusing a new process.
             if entries.len() >= config.limits.max_running_processes
                 && let Some(oldest) = entries
                     .iter()

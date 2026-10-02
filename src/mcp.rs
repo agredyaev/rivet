@@ -1,3 +1,7 @@
+//! MCP stdio adapter and tool request routing.
+//!
+//! Handlers delegate command, filesystem, and process policy to their modules
+//! and convert the results into MCP responses.
 use crate::{
     commands::{self, CommandRequest},
     config::Config,
@@ -68,6 +72,7 @@ struct Rivet {
     mutation: Arc<Mutex<()>>,
 }
 
+// Build the route table once instead of reconstructing it for each request.
 static ROUTER: LazyLock<ToolRouter<Rivet>> = LazyLock::new(Rivet::tool_router);
 
 #[derive(Deserialize, JsonSchema)]

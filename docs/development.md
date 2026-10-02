@@ -14,6 +14,10 @@ python3 tests/smoke.py target/release/rivet
 
 On Windows, CI uses `tests/portable_smoke.py` with the native Windows executable.
 
+## Clippy
+
+CI runs Clippy for all targets with `-D warnings`. The source currently has no `#[allow(clippy::...)]` suppressions. If a suppression becomes necessary, keep it scoped to the smallest item and explain its reason beside the attribute; do not silence warnings crate-wide.
+
 ## Cross-compilation
 
 CI installs `cargo-zigbuild` and builds Linux x64 and Windows x64 GNU targets on Ubuntu:

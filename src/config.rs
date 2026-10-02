@@ -1,3 +1,7 @@
+//! TOML loading and startup validation.
+//!
+//! Executables are resolved once, and allowed roots are kept open as directory
+//! capabilities so filesystem operations can remain relative to those roots.
 use cap_std::{ambient_authority, fs::Dir};
 use serde::Deserialize;
 #[cfg(unix)]
@@ -178,6 +182,7 @@ impl Config {
                 dir,
             });
         }
+        // Prefer the most specific root when roots overlap.
         roots.sort_by(|a, b| {
             b.path
                 .components()

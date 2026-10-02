@@ -1,3 +1,7 @@
+//! Rivet's executable entry point.
+//!
+//! Startup loads and validates configuration before dispatching to the CLI
+//! command or starting the MCP stdio server.
 mod commands;
 mod config;
 mod filesystem;
