@@ -1,0 +1,20 @@
+[filesystem]
+# Pass --root PATH when launching Rivet; repeat it for multiple roots.
+allowed_roots = []
+
+[limits]
+max_stdout_bytes = 2097152
+max_stderr_bytes = 2097152
+max_file_read_bytes = 4194304
+max_directory_entries = 1000
+max_running_processes = 8
+default_timeout_ms = 120000
+max_timeout_ms = 1800000
+
+[environment]
+pass = ["PATH", "HOME", "TMPDIR", "LANG"]
+allow_override = ["RUST_LOG"]
+
+[commands.git]
+executable = "git"
+allowed_subcommands = ["status", "diff", "log", "show"]

@@ -1,0 +1,65 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          components: clippy, rustfmt
+      - run: cargo fmt --check
+      - run: cargo clippy --locked --all-targets -- -D warnings
+      - run: cargo test --locked
+      - run: cargo build --locked --release
+      - if: runner.os != 'Windows'
+        run: python3 tests/smoke.py target/release/rivet
+      - if: runner.os == 'Windows'
+        run: python tests/portable_smoke.py target/release/rivet.exe
+
+  cross:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          targets: x86_64-unknown-linux-gnu, x86_64-pc-windows-gnu
+      - run: python3 -m pip install cargo-zigbuild==0.22.1
+      - run: cargo zigbuild --locked --release --target x86_64-unknown-linux-gnu --target x86_64-pc-windows-gnu
+      - run: python3 tests/smoke.py target/x86_64-unknown-linux-gnu/release/rivet
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rivet-cross-x64
+          path: |
+            target/x86_64-unknown-linux-gnu/release/rivet
+            target/x86_64-pc-windows-gnu/release/rivet.exe
+          if-no-files-found: error
+
+  verify-cross-windows:
+    needs: cross
+    runs-on: windows-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: rivet-cross-x64
+          path: cross
+      - run: python tests/portable_smoke.py cross/x86_64-pc-windows-gnu/release/rivet.exe
