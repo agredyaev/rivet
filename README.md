@@ -1,11 +1,16 @@
 # Rivet
 
-[![CI](https://github.com/agredyaev/rivet/actions/workflows/ci.yml/badge.svg)](https://github.com/agredyaev/rivet/actions/workflows/ci.yml)
-![Rust 2024](https://img.shields.io/badge/Rust-2024-orange?logo=rust&logoColor=white)
-![Tokio](https://img.shields.io/badge/Tokio-async-purple?logo=tokio&logoColor=white)
-![Zig](https://img.shields.io/badge/Zig-cross--compilation-f7a41d?logo=zig&logoColor=white)
-![Platforms](https://img.shields.io/badge/OS-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
-![MCP stdio](https://img.shields.io/badge/MCP-stdio-blue)
+[![CI](https://img.shields.io/github/actions/workflow/status/agredyaev/rivet/ci.yml?branch=dev&style=for-the-badge&logo=githubactions&logoColor=white&label=CI)](https://github.com/agredyaev/rivet/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/agredyaev/rivet?style=for-the-badge&logo=github&logoColor=white&color=6366F1)](https://github.com/agredyaev/rivet/releases/latest)
+
+![Rust 2024](https://img.shields.io/badge/Rust-2024-18181B?style=for-the-badge&logo=rust&logoColor=white)
+![Tokio](https://img.shields.io/badge/Tokio-async-7C3AED?style=for-the-badge&logo=tokio&logoColor=white)
+![Zig](https://img.shields.io/badge/Zig-cross--compilation-F7A41D?style=for-the-badge&logo=zig&logoColor=white)
+![MCP stdio](https://img.shields.io/badge/MCP-stdio-0EA5E9?style=for-the-badge)
+
+![Windows](https://img.shields.io/badge/Windows-x64-0078D4?style=for-the-badge)
+![Linux](https://img.shields.io/badge/Linux-x64-FCC624?style=for-the-badge&logo=linux&logoColor=black)
+![macOS](https://img.shields.io/badge/macOS-native-18181B?style=for-the-badge&logo=apple&logoColor=white)
 
 Rivet is a local MCP server that gives an MCP client controlled access to
 configured commands, files, and long-running processes. It communicates over
