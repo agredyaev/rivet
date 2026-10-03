@@ -20,7 +20,7 @@ ChatGPT cannot launch a local stdio process. Connect it through [OpenAI Secure M
    & ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/agredyaev/rivet/main/install.ps1'))) -Root (Get-Location).Path
    ```
 
-   The installer detects the platform, downloads the latest release ZIP, verifies its SHA-256 checksum, and installs it under the user's local application data directory. Rivet then presents the workspace and command selection in its CLI. Select any built-ins, optionally add custom commands and allowed first arguments, and review the resulting scope before starting the tunnel.
+   The installer detects the platform, downloads the latest release ZIP, verifies its SHA-256 checksum, and installs it under the user's local application data directory. Rivet then presents the workspace and command selection in its CLI. It offers `uv`, `mkdir`, `rg`, and `make` with any arguments; `git` allows `status`, `diff`, `log`, `show`, `add`, `commit`, `rev-parse`, and `ls-files`; `cargo` allows `check`, `test`, `fmt`, `clippy`, and `metadata`. Enter multiple menu numbers separated by commas to select multiple built-ins. Select **Add a custom command** to add one or more commands, then set their allowed first arguments. Review the resulting scope before starting the tunnel.
 
    The launcher checks the latest stable release in the official [OpenAI tunnel-client repository](https://github.com/openai/tunnel-client/releases), downloads the matching platform archive if needed, verifies the SHA-256 from that same release, and installs `tunnel-client` with its bundled `cloudflared`. If GitHub is unavailable, an installed client is reused; the first install requires internet access.
 
