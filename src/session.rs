@@ -287,21 +287,23 @@ pub fn run(args: Vec<String>) -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let mut input = io::stdin().lock();
-    let mut output = io::stdout().lock();
     let color = io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
-    let selected = match collect_scope(
-        &mut input,
-        &mut output,
-        &cwd,
-        &roots,
-        !has_command_flags,
-        color,
-    ) {
-        Ok(scope) => scope,
-        Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::FAILURE;
+    let selected = {
+        let mut input = io::stdin().lock();
+        let mut output = io::stdout().lock();
+        match collect_scope(
+            &mut input,
+            &mut output,
+            &cwd,
+            &roots,
+            !has_command_flags,
+            color,
+        ) {
+            Ok(scope) => scope,
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
         }
     };
     let mut scope = scope_args(&selected);
