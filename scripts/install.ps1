@@ -13,7 +13,7 @@ Set-StrictMode -Version Latest
 $repo = 'agredyaev/rivet'
 $installRoot = if ($env:RIVET_INSTALL_ROOT) { $env:RIVET_INSTALL_ROOT } else { Join-Path $env:LOCALAPPDATA 'Rivet' }
 if ($Help) {
-    Write-Host "Usage: download scripts/install.ps1 and invoke it with optional -Root PATH -AllowCommand NAME=EXECUTABLE -AllowSubcommand NAME=VALUE"
+    Write-Host "Usage: install.ps1 [-Help] [-Root PATH] [-AllowCommand NAME=EXECUTABLE] [-AllowSubcommand NAME=VALUE] [-AllowAnyArgs NAME]"
     Write-Host "Downloads the latest verified Rivet release, installs it under $installRoot, and starts one tunnel session."
     exit 0
 }

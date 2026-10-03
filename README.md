@@ -14,6 +14,8 @@
 
 Rivet implements an [MCP](https://modelcontextprotocol.io/) server over stdio. It exposes configured commands, file operations within configured roots, and long-running child processes. It does not listen on a network port.
 
+Run `rivet --help` for the command list, `rivet serve --help` for server options, or `rivet session --help` for interactive-session options.
+
 ## Install and run
 
 Run the command for your shell from the workspace Rivet should access. Rivet displays built-in commands to select and lets you add a custom command with its executable and permitted first arguments. It downloads the latest verified release, installs it, asks for the tunnel ID and runtime API key, then starts a tunnel session. The installer scripts are [`install.sh`](https://raw.githubusercontent.com/agredyaev/rivet/main/scripts/install.sh) and [`install.ps1`](https://raw.githubusercontent.com/agredyaev/rivet/main/scripts/install.ps1).
@@ -28,7 +30,7 @@ Windows PowerShell:
 & ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/agredyaev/rivet/main/scripts/install.ps1'))) -Root (Get-Location).Path
 ```
 
-The platform installers download the latest verified release and forward the workspace to Rivet. Rivet offers `uv`, `mkdir`, `rg`, and `make` with any arguments; `git` is limited to `status`, `diff`, `log`, `show`, `add`, `commit`, `rev-parse`, and `ls-files`; `cargo` is limited to `check`, `test`, `fmt`, `clippy`, and `metadata`. Enter multiple menu numbers separated by commas to select multiple built-ins. Select **Add a custom command** to add one or more commands, each with chosen first arguments or any arguments. Review the displayed scope before continuing. The installers detect the platform, verify the release ZIP with SHA-256, and install under `~/.local/share/rivet/<release>-<checksum>` or `%LOCALAPPDATA%\Rivet\<release>-<checksum>`. The scope applies only to the current session.
+The platform installers download the latest verified release and forward the workspace to Rivet. Rivet offers `uv`, `mkdir`, `rg`, and `make` with any arguments. For `git`, the permitted first argument is one of `status`, `diff`, `log`, `show`, `add`, `commit`, `rev-parse`, or `ls-files`; for `cargo`, it is one of `check`, `test`, `fmt`, `clippy`, or `metadata`. Remaining arguments pass directly to the executable. Enter multiple menu numbers separated by commas to select multiple built-ins. Select **Add a custom command** to add one or more commands, each with chosen first arguments or any arguments. Review the displayed scope before continuing. The installers detect the platform, verify the release ZIP with SHA-256, and install under `~/.local/share/rivet/<release>-<checksum>` or `%LOCALAPPDATA%\Rivet\<release>-<checksum>`. The scope applies only to the current session.
 
 During setup, Rivet downloads the latest stable `tunnel-client` and bundled `cloudflared` from the official OpenAI GitHub release and verifies its SHA-256 checksum. Create the tunnel and runtime API key in OpenAI Platform using the links shown by Rivet. The runtime key is requested each time, entered with hidden input, and not saved. The temporary tunnel profile is removed when the session ends.
 

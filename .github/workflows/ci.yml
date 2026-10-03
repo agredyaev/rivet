@@ -2,6 +2,7 @@ name: CI
 
 on:
   push:
+    branches: [main]
     paths-ignore:
       - '**.md'
       - 'docs/**'
@@ -31,13 +32,24 @@ jobs:
       - run: cargo test --locked
       - run: cargo build --locked --release
       - if: runner.os != 'Windows'
+        run: target/release/rivet --help && target/release/rivet serve --help
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          & target/release/rivet.exe --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & target/release/rivet.exe serve --help
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+      - if: runner.os != 'Windows'
         run: target/release/rivet config-check --config rivet.example.toml --root .
       - if: runner.os == 'Windows'
         run: target/release/rivet.exe config-check --config rivet.example.toml --root .
       - if: runner.os != 'Windows'
         run: |
           bash -n scripts/install.sh
-          bash scripts/install.sh --help
+          help=$(bash scripts/install.sh --help)
+          grep -Fq -- '--allow-any-args NAME' <<< "$help"
+          printf '%s\n' "$help"
       - if: runner.os != 'Windows'
         run: python3 tests/smoke.py target/release/rivet
       - if: runner.os == 'Windows'
@@ -51,6 +63,9 @@ jobs:
             [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors) | Out-Null
             if ($errors.Count) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
           }
+          $help = & pwsh -NoProfile -File "$env:GITHUB_WORKSPACE/scripts/install.ps1" -Help 2>&1 | Out-String
+          if ($LASTEXITCODE -ne 0) { throw 'PowerShell installer -Help failed.' }
+          if ($help -notmatch '-AllowAnyArgs') { throw 'PowerShell installer help omits -AllowAnyArgs.' }
 
   cross:
     runs-on: ubuntu-latest

@@ -19,6 +19,23 @@ struct PendingCommand {
     allowed_subcommands: Vec<String>,
 }
 
+fn print_usage(action: Option<&str>) {
+    match action {
+        Some("session") => println!(
+            "Usage: rivet session [--root PATH] [--allow-command NAME=EXECUTABLE] [--allow-subcommand NAME=VALUE] [--allow-any-args NAME]\nWithout command flags, Rivet prompts for built-in and custom commands."
+        ),
+        Some(action) if matches!(action, "serve" | "doctor" | "commands" | "config-check") => {
+            println!(
+                "Usage: rivet {} [--config PATH] --root PATH... [--allow-command NAME=EXECUTABLE]... [--allow-subcommand NAME=VALUE]... [--allow-any-args NAME]...",
+                action
+            )
+        }
+        _ => println!(
+            "Usage: rivet <serve|session|doctor|commands|config-check> [OPTIONS]\nRun `rivet <command> --help` for command options."
+        ),
+    }
+}
+
 fn assignment<'b>(argument: &str, value: &'b str) -> Result<(&'b str, &'b str), String> {
     let Some((name, setting)) = value.split_once('=') else {
         return Err(format!("{argument} requires NAME=VALUE"));
@@ -33,11 +50,13 @@ fn assignment<'b>(argument: &str, value: &'b str) -> Result<(&'b str, &'b str), 
 async fn main() -> ExitCode {
     let mut args = env::args().skip(1);
     let Some(action) = args.next() else {
-        eprintln!(
-            "usage: rivet <serve|doctor|commands|config-check> [--config PATH] --root PATH... [--allow-command NAME=EXECUTABLE]... [--allow-subcommand NAME=VALUE]... [--allow-any-args NAME]..."
-        );
+        print_usage(None);
         return ExitCode::FAILURE;
     };
+    if matches!(action.as_str(), "help" | "--help" | "-h") {
+        print_usage(None);
+        return ExitCode::SUCCESS;
+    }
     if action == "session-mcp" {
         let executable = match env::current_exe() {
             Ok(path) => path,
@@ -74,6 +93,10 @@ async fn main() -> ExitCode {
     let mut command_args: BTreeMap<String, PendingCommand> = BTreeMap::new();
     while let Some(arg) = args.next() {
         match arg.as_str() {
+            "--help" | "-h" => {
+                print_usage(Some(&action));
+                return ExitCode::SUCCESS;
+            }
             "--allow-any-args" => {
                 let Some(name) = args.next() else {
                     eprintln!("--allow-any-args requires a command name");

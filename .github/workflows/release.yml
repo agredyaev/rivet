@@ -1,8 +1,12 @@
 name: Release
 
 on:
-  release:
-    types: [published]
+  workflow_call:
+    inputs:
+      tag:
+        description: Release tag to build
+        required: true
+        type: string
   workflow_dispatch:
     inputs:
       tag:
@@ -40,7 +44,7 @@ jobs:
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
-          ref: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+          ref: ${{ inputs.tag }}
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           targets: ${{ matrix.target }}
@@ -84,7 +88,7 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
-          TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+          TAG: ${{ inputs.tag }}
         run: |
           existing_assets=$(gh release view "$TAG" --json assets --jq '.assets[].name')
           while IFS= read -r asset; do

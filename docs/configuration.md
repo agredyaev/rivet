@@ -2,6 +2,8 @@
 
 Rivet reads TOML from `./rivet.toml` unless `--config PATH` is supplied. Unknown fields are rejected. Start with [`rivet.example.toml`](../rivet.example.toml).
 
+Run `rivet --help` for the command list. Add `--help` or `-h` after `serve`, `doctor`, `commands`, or `config-check` to print that command's options. `rivet session --help` prints the interactive session options without reading the config file.
+
 ## Session scope
 
 Pass each permitted filesystem root on the command line. Roots must exist; relative paths resolve from the launch directory.

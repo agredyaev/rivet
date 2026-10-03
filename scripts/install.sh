@@ -19,7 +19,7 @@ rivet_error() { printf '  %b✗%b %s\n' "$red" "$reset" "$1" >&2; }
 rivet_header
 
 if [[ "${1:-}" == '--help' || "${1:-}" == '-h' ]]; then
-  printf 'Usage: curl -fsSL https://raw.githubusercontent.com/%s/main/scripts/install.sh | bash -s -- [--root PATH] [--allow-command NAME=EXECUTABLE] [--allow-subcommand NAME=VALUE] [--allow-any-args NAME]\n' "$repo"
+  printf 'Usage: curl -fsSL https://raw.githubusercontent.com/%s/main/scripts/install.sh | bash -s -- [--help] [--root PATH] [--allow-command NAME=EXECUTABLE] [--allow-subcommand NAME=VALUE] [--allow-any-args NAME]\n' "$repo"
   printf 'Downloads the latest verified Rivet release, installs it under %s, and starts one tunnel session.\n' "$install_root"
   exit 0
 fi
@@ -28,12 +28,16 @@ if [[ ! -t 1 || ! -r /dev/tty ]]; then
   printf 'Rivet setup needs an interactive terminal. Run this command in Terminal or PowerShell.\n' >&2
   exit 1
 fi
-for tool in curl unzip awk; do
+for tool in curl unzip awk tr uname mktemp mkdir rm; do
   if ! command -v "$tool" >/dev/null 2>&1; then
     printf 'Required tool not found: %s\n' "$tool" >&2
     exit 1
   fi
 done
+if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+  printf 'Required tool not found: sha256sum or shasum\n' >&2
+  exit 1
+fi
 
 case "$(uname -s)" in
   Darwin) os='darwin' ;;
