@@ -79,7 +79,14 @@ allow_any_args = true
                 time.sleep(.05)
             raise AssertionError("process did not reach the expected state")
         try:
-            send("initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "portable-smoke", "version": "1"}})
+            info = send("initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "portable-smoke", "version": "1"}})
+            assert info["serverInfo"] == {
+                "name": "rivet",
+                "title": "Rivet",
+                "version": "0.1.0",
+                "description": "Local MCP server for configured commands and allowed filesystem roots.",
+                "websiteUrl": "https://github.com/agredyaev/rivet",
+            }, info
             assert len(send("tools/list", {})["tools"]) == 11
             path = root / "text.txt"
             call("write_file", {"path": str(path), "content": "hello", "mode": "create"})

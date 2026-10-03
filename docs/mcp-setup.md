@@ -68,6 +68,12 @@ tunnel-client run --profile rivet
 
 4. Leave `tunnel-client run` running. In ChatGPT, enable Developer mode in **Settings → Security & login**. If the setting is unavailable, ask the workspace admin to enable it. Open **Plugins**, select **+**, create an app, choose **Tunnel** as the connection, and select the tunnel ID from step 1. Enable the app in a chat and call `list_roots` to verify the connection.
 
+### App metadata
+
+Set the user-facing app name and description in the ChatGPT app creation form. The MCP `initialize` response supplies Rivet's server identity: name `rivet`, title `Rivet`, version from `Cargo.toml`, a short description, and the project URL. Scan or refresh the app's tools after changing server metadata.
+
+The `Developer` and `Category` values belong to ChatGPT's app or listing metadata; the MCP server cannot set them. The version shown by ChatGPT for the app is also separate from Rivet's MCP server version. This repository has no plugin package manifest. Public plugin packages use `plugin.json` for listing metadata such as `developerName`, `category`, and `websiteURL`; that manifest is not used to configure a private app connected through Secure MCP Tunnel.
+
 For ChatGPT Web access, the tunnel process must remain connected. If Rivet or the host stops, ChatGPT cannot call its tools. See OpenAI's [Secure MCP Tunnel setup guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels) for tunnel creation, workspace association, and current access requirements.
 
 ## Common connection errors

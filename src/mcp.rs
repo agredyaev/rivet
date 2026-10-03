@@ -12,7 +12,7 @@ use rmcp::{
     ServiceExt,
     handler::server::router::tool::ToolRouter,
     handler::server::wrapper::Parameters,
-    model::{CallToolResult, ContentBlock},
+    model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig},
     schemars::JsonSchema,
     tool, tool_handler, tool_router,
 };
@@ -248,7 +248,18 @@ impl Rivet {
 }
 
 #[tool_handler(router = ROUTER)]
-impl rmcp::ServerHandler for Rivet {}
+impl rmcp::ServerHandler for Rivet {
+    fn get_info(&self) -> ServerConfig {
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_server_info(
+            Implementation::new("rivet", env!("CARGO_PKG_VERSION"))
+                .with_title("Rivet")
+                .with_description(
+                    "Local MCP server for configured commands and allowed filesystem roots.",
+                )
+                .with_website_url("https://github.com/agredyaev/rivet"),
+        )
+    }
+}
 
 struct LineLimited<R> {
     inner: R,

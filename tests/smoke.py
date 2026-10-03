@@ -37,6 +37,16 @@ def call(proc, number, name, arguments, error=None):
     return result["structuredContent"]
 
 
+def assert_server_info(result):
+    assert result["serverInfo"] == {
+        "name": "rivet",
+        "title": "Rivet",
+        "version": "0.1.0",
+        "description": "Local MCP server for configured commands and allowed filesystem roots.",
+        "websiteUrl": "https://github.com/agredyaev/rivet",
+    }, result
+
+
 def main():
     binary = Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory() as tmp:
@@ -87,7 +97,7 @@ allow_any_args = true
         assert subprocess.run([binary, "config-check", "--config", portable, "--root", ".", "--root", other_root], cwd=workspace, capture_output=True).returncode == 0
         scoped = subprocess.Popen([binary, "serve", "--config", portable, "--root", ".", "--root", other_root], cwd=workspace, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
-            send(scoped, 1, "initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "smoke", "version": "1"}})
+            assert_server_info(send(scoped, 1, "initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "smoke", "version": "1"}}))
             assert set(call(scoped, 101, "list_roots", {})["roots"]) == {str(workspace.resolve()), str(other_root.resolve())}
             assert call(scoped, 2, "read_file", {"path": str(workspace.resolve() / "one.txt")})["text"] == "one"
             assert call(scoped, 3, "read_file", {"path": str(other_root / "two.txt")})["text"] == "two"
@@ -98,7 +108,7 @@ allow_any_args = true
             assert scoped.wait(timeout=10) == 0
         proc = subprocess.Popen([binary, "serve", "--config", config], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
-            send(proc, 1, "initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "smoke", "version": "1"}})
+            assert_server_info(send(proc, 1, "initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "smoke", "version": "1"}}))
             proc.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
             proc.stdin.flush()
             tools = send(proc, 2, "tools/list", {})["tools"]
