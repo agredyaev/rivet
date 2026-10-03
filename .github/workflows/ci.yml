@@ -38,6 +38,7 @@ jobs:
         run: |
           bash -n start-rivet.sh
           bash -n install.sh
+          bash -n install-session.sh
           bash -n scripts/start-tunnel.sh
           bash -n scripts/sync-tunnel-client.sh
           bash -n scripts/ui.sh
@@ -46,12 +47,14 @@ jobs:
         run: python3 tests/smoke.py target/release/rivet
       - if: runner.os != 'Windows'
         run: bash tests/setup-smoke.sh
+      - if: runner.os != 'Windows'
+        run: bash tests/install-session-smoke.sh
       - if: runner.os == 'Windows'
         run: python tests/portable_smoke.py target/release/rivet.exe
       - if: runner.os == 'Windows'
         shell: pwsh
         run: |
-          foreach ($path in @("$env:GITHUB_WORKSPACE/install.ps1", "$env:GITHUB_WORKSPACE/start-rivet.ps1", "$env:GITHUB_WORKSPACE/scripts/start-tunnel.ps1", "$env:GITHUB_WORKSPACE/scripts/sync-tunnel-client.ps1", "$env:GITHUB_WORKSPACE/scripts/serve-rivet-mcp.ps1", "$env:GITHUB_WORKSPACE/scripts/ui.ps1")) {
+          foreach ($path in @("$env:GITHUB_WORKSPACE/install.ps1", "$env:GITHUB_WORKSPACE/install-session.ps1", "$env:GITHUB_WORKSPACE/start-rivet.ps1", "$env:GITHUB_WORKSPACE/scripts/start-tunnel.ps1", "$env:GITHUB_WORKSPACE/scripts/sync-tunnel-client.ps1", "$env:GITHUB_WORKSPACE/scripts/serve-rivet-mcp.ps1", "$env:GITHUB_WORKSPACE/scripts/ui.ps1")) {
             $tokens = $null
             $errors = $null
             [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors) | Out-Null

@@ -11,16 +11,16 @@ ChatGPT cannot launch a local stdio process. Connect it through [OpenAI Secure M
    macOS or Linux:
 
    ```sh
-   curl -fsSL https://raw.githubusercontent.com/agredyaev/rivet/main/install.sh | bash -s -- --root "$PWD" --allow-command git=git --allow-subcommand git=status --allow-subcommand git=diff
+   curl -fsSL https://raw.githubusercontent.com/agredyaev/rivet/main/install-session.sh | bash
    ```
 
    Windows PowerShell:
 
    ```powershell
-   & ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/agredyaev/rivet/main/install.ps1'))) -Root (Get-Location).Path -AllowCommand 'git=git' -AllowSubcommand 'git=status','git=diff'
+   & ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/agredyaev/rivet/main/install-session.ps1')))
    ```
 
-   The installer detects the platform, downloads the latest release ZIP, verifies its SHA-256 checksum, and installs it under the user's local application data directory. Omit `--root` or `-Root` to choose the workspace interactively. Omit command flags to leave command and process execution disabled.
+   These scoped scripts use the current directory as the workspace. They pass `git` with `status`, `diff`, `log`, `show`, `add`, and `commit`, plus `cargo`, `uv`, and `make` with any arguments. The program list is built in loops in the script. Review it before running in an unfamiliar workspace. Use `install.sh` or `install.ps1` directly to choose a different scope. The installer detects the platform, downloads the latest release ZIP, verifies its SHA-256 checksum, and installs it under the user's local application data directory.
 
    The launcher checks the latest stable release in the official [OpenAI tunnel-client repository](https://github.com/openai/tunnel-client/releases), downloads the matching platform archive if needed, verifies the SHA-256 from that same release, and installs `tunnel-client` with its bundled `cloudflared`. If GitHub is unavailable, an installed client is reused; the first install requires internet access.
 

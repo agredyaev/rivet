@@ -16,23 +16,19 @@ Rivet implements an [MCP](https://modelcontextprotocol.io/) server over stdio. I
 
 ## Install and run
 
-Run one command from the workspace Rivet should access. It downloads the latest verified release, installs it, asks for the tunnel ID and runtime API key, then starts a tunnel session:
+Run one command from the workspace Rivet should access. This scoped setup allows Git status, diff, log, show, add, and commit, plus `cargo`, `uv`, and `make` with any arguments. The workspace is the current directory. It downloads the latest verified release, installs it, asks for the tunnel ID and runtime API key, then starts a tunnel session:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/agredyaev/rivet/main/install.sh | bash -s -- \\
-  --root "$PWD" \\
-  --allow-command git=git \\
-  --allow-subcommand git=status \\
-  --allow-subcommand git=diff
+curl -fsSL https://raw.githubusercontent.com/agredyaev/rivet/main/install-session.sh | bash
 ```
 
 Windows PowerShell:
 
 ```powershell
-& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/agredyaev/rivet/main/install.ps1'))) -Root (Get-Location).Path -AllowCommand 'git=git' -AllowSubcommand 'git=status','git=diff'
+& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/agredyaev/rivet/main/install-session.ps1')))
 ```
 
-The installer detects the platform, verifies the release ZIP with SHA-256, and installs under `~/.local/share/rivet/<release>-<checksum>` or `%LOCALAPPDATA%\Rivet\<release>-<checksum>`. Workspace roots and allowed programs apply only to that session. Omit command flags to disable command and process execution; omit `--root` or `-Root` to choose the workspace interactively.
+These scoped setup scripts derive the workspace from the current directory and pass the allowlist through loops as startup arguments. `cargo`, `uv`, and `make` accept any arguments, so review the script before use in an unfamiliar workspace. The underlying installers detect the platform, verify the release ZIP with SHA-256, and install under `~/.local/share/rivet/<release>-<checksum>` or `%LOCALAPPDATA%\Rivet\<release>-<checksum>`. The scope applies only to the current session. Use `install.sh` or `install.ps1` directly to choose a different scope.
 
 The installer downloads the latest stable `tunnel-client` and bundled `cloudflared` from the official OpenAI GitHub release and verifies its SHA-256 checksum. Create the tunnel and runtime API key in OpenAI Platform using the links shown by the launcher. The runtime key is requested each time, entered with hidden input, and not saved. The temporary tunnel profile is removed when the session ends.
 
@@ -45,7 +41,7 @@ Manual release packages are available from [Releases](https://github.com/agredya
 | macOS | arm64 | `aarch64-apple-darwin` | `rivet-darwin-arm64.zip` |
 | Windows | x64 | `x86_64-pc-windows-gnu` | `rivet-windows-x64.zip` |
 
-Each release package includes Rivet, a starter config, and both one-command installers. Manual download users can extract it and run the launcher directly:
+Each release package includes Rivet, a starter config, the scoped one-command setup scripts, and the generic installers. Manual download users can extract it and run the launcher directly:
 
 ```sh
 ./start-rivet.sh
