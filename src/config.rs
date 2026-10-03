@@ -15,17 +15,8 @@ use std::{
 #[derive(Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConfigFile {
-    pub filesystem: FilesystemConfig,
     pub limits: Limits,
     pub environment: Environment,
-    pub commands: BTreeMap<String, CommandConfig>,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct FilesystemConfig {
-    #[serde(default)]
-    pub allowed_roots: Vec<PathBuf>,
 }
 
 #[derive(Deserialize)]
@@ -47,11 +38,8 @@ pub struct Environment {
     pub allow_override: Vec<String>,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct CommandConfig {
     pub executable: String,
-    #[serde(default)]
     pub allow_any_args: bool,
     pub allowed_subcommands: Option<Vec<String>>,
 }
@@ -130,7 +118,11 @@ fn executable_file(metadata: &fs::Metadata) -> bool {
 }
 
 impl Config {
-    pub fn load(path: &Path, cli_roots: Vec<PathBuf>) -> Result<Self, String> {
+    pub fn load(
+        path: &Path,
+        cli_roots: Vec<PathBuf>,
+        command_specs: BTreeMap<String, CommandConfig>,
+    ) -> Result<Self, String> {
         let source = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let file: ConfigFile = toml::from_str(&source).map_err(|e| e.to_string())?;
         let limits = file.limits;
@@ -147,19 +139,14 @@ impl Config {
         {
             return Err("limits must be positive, max_file_read_bytes <= 64 MiB, and default_timeout_ms <= max_timeout_ms".into());
         }
-        let overridden = !cli_roots.is_empty();
-        let configured_roots = if overridden {
-            cli_roots
-        } else {
-            file.filesystem.allowed_roots
-        };
+        let configured_roots = cli_roots;
         if configured_roots.is_empty() {
-            return Err("allowed_roots must not be empty; set it in config or pass --root".into());
+            return Err("at least one --root is required".into());
         }
         let mut roots = Vec::new();
         let mut seen = BTreeSet::new();
         for path in configured_roots {
-            let path = if overridden && !path.is_absolute() {
+            let path = if !path.is_absolute() {
                 env::current_dir()
                     .map_err(|e| format!("failed to resolve --root: {e}"))?
                     .join(path)
@@ -167,7 +154,10 @@ impl Config {
                 path
             };
             if !path.is_absolute() {
-                return Err(format!("root must be absolute: {}", path.display()));
+                return Err(format!(
+                    "--root must resolve to an absolute path: {}",
+                    path.display()
+                ));
             }
             let canonical =
                 fs::canonicalize(&path).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -200,7 +190,7 @@ impl Config {
             }
         }
         let mut commands = BTreeMap::new();
-        for (name, command) in file.commands {
+        for (name, command) in command_specs {
             if name.is_empty() || name.contains(char::is_whitespace) {
                 return Err(format!("invalid command name: {name:?}"));
             }

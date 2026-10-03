@@ -42,4 +42,4 @@ cargo build --locked --profile profiling
 python3 tests/measure.py target/profiling/rivet --calls 100000 --sample rivet-profile.txt
 ```
 
-The measurement script prints JSON with startup latency, idle RSS/CPU, total wall-clock time, and per-call medians. CPU sampling adds overhead; compare unsampled runs on the same host when measuring elapsed time. See [measurements](measurements.md) for the recorded environment and results.
+The measurement script prints JSON with startup latency, idle RSS/CPU when the host permits process inspection, total wall-clock time, and per-call medians. Restricted environments report RSS/CPU as unavailable. CPU sampling adds overhead; compare unsampled runs on the same host when measuring elapsed time. See [measurements](measurements.md) for the recorded environment and results.

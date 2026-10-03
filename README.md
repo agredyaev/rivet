@@ -16,7 +16,27 @@ Rivet implements an [MCP](https://modelcontextprotocol.io/) server over stdio. I
 
 ## Install and run
 
-Download the matching binary from [Releases](https://github.com/agredyaev/rivet/releases/latest) and download [`rivet.example.toml`](rivet.example.toml):
+Run one command from the workspace Rivet should access. It downloads the latest verified release, installs it, asks for the tunnel ID and runtime API key, then starts a tunnel session:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/agredyaev/rivet/main/install.sh | bash -s -- \\
+  --root "$PWD" \\
+  --allow-command git=git \\
+  --allow-subcommand git=status \\
+  --allow-subcommand git=diff
+```
+
+Windows PowerShell:
+
+```powershell
+& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/agredyaev/rivet/main/install.ps1'))) -Root (Get-Location).Path -AllowCommand 'git=git' -AllowSubcommand 'git=status','git=diff'
+```
+
+The installer detects the platform, verifies the release ZIP with SHA-256, and installs under `~/.local/share/rivet/<release>-<checksum>` or `%LOCALAPPDATA%\Rivet\<release>-<checksum>`. Workspace roots and allowed programs apply only to that session. Omit command flags to disable command and process execution; omit `--root` or `-Root` to choose the workspace interactively.
+
+The installer downloads the latest stable `tunnel-client` and bundled `cloudflared` from the official OpenAI GitHub release and verifies its SHA-256 checksum. Create the tunnel and runtime API key in OpenAI Platform using the links shown by the launcher. The runtime key is requested each time, entered with hidden input, and not saved. The temporary tunnel profile is removed when the session ends.
+
+Manual release packages are available from [Releases](https://github.com/agredyaev/rivet/releases/latest):
 
 | OS | Architecture | Rust target | Release asset |
 | --- | --- | --- | --- |
@@ -25,40 +45,37 @@ Download the matching binary from [Releases](https://github.com/agredyaev/rivet/
 | macOS | arm64 | `aarch64-apple-darwin` | `rivet-darwin-arm64.zip` |
 | Windows | x64 | `x86_64-pc-windows-gnu` | `rivet-windows-x64.zip` |
 
-Extract the matching archive. It contains `rivet` on macOS and Linux, or `rivet.exe` on Windows.
-
-Copy the example file to `rivet.toml`. Set `filesystem.allowed_roots` to an existing absolute directory. The example uses `[]`, which Rivet rejects until you add a root.
+Each release package includes Rivet, a starter config, and both one-command installers. Manual download users can extract it and run the launcher directly:
 
 ```sh
-cp rivet.example.toml rivet.toml
+./start-rivet.sh
 ```
-
-Edit `rivet.toml`, then run these commands from its directory:
-
-```sh
-chmod +x ./rivet
-./rivet config-check
-./rivet doctor
-./rivet serve
-```
-
-On Windows PowerShell, copy the configuration, edit `rivet.toml`, then run:
 
 ```powershell
-Copy-Item rivet.example.toml rivet.toml
-notepad rivet.toml
-.\rivet.exe config-check
-.\rivet.exe doctor
-.\rivet.exe serve
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start-rivet.ps1
 ```
 
-If you built from source, use `target/release/rivet` (or `target\release\rivet.exe` on Windows). Rivet reads `./rivet.toml` by default. Pass `--config PATH` to select another file. Repeat `--root PATH` to replace the configured roots for a session:
+The direct launcher also takes the filesystem and command scope for one tunnel session. Without `--root`, it asks for a workspace; command permissions are opt-in flags.
 
 ```sh
-./rivet serve --config /path/to/rivet.toml --root /path/to/project
+./start-rivet.sh --root /path/to/project \
+  --allow-command git=git \
+  --allow-subcommand git=status \
+  --allow-subcommand git=diff
 ```
 
-Follow [MCP setup](docs/mcp-setup.md) to connect Rivet to ChatGPT through Secure MCP Tunnel. The guide includes Bash and PowerShell launch scripts. Keep `rivet.toml` private because it contains local paths and the command allowlist.
+It downloads the latest stable `tunnel-client` and bundled `cloudflared` from the official OpenAI GitHub release, verifies the SHA-256 checksum, asks for the tunnel ID and runtime API key with hidden input, then starts the tunnel with this scope. Create the tunnel and runtime key in OpenAI Platform using the links shown by the launcher. Keep the terminal open while you use Rivet through ChatGPT. The runtime key is requested each time and is not saved. The tunnel profile is temporary and removed when the session ends.
+
+The package launcher is for a remote tunnel. If your MCP host starts Rivet directly over stdio, use `bin/rivet` from the package (or `target/release/rivet` from a source build) and supply an existing workspace root:
+
+```sh
+./bin/rivet serve --config ./rivet.toml --root /path/to/project \
+  --allow-command git=git --allow-subcommand git=status --allow-subcommand git=diff
+```
+
+On Windows use `bin\\rivet.exe` and the equivalent flags `--root`, `--allow-command`, and `--allow-subcommand`. Rivet reads `./rivet.toml` by default; pass `--config PATH` for another config. Repeat `--root PATH` for multiple roots and command flags to extend the session scope.
+
+Follow [MCP setup](docs/mcp-setup.md) to connect Rivet to ChatGPT through Secure MCP Tunnel. The TOML file stores resource limits and environment policy; workspace roots and allowed programs are passed to Rivet as startup arguments for each session.
 
 ## Documentation
 

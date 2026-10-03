@@ -10,6 +10,12 @@ import tempfile
 import time
 from pathlib import Path
 
+CARGO_VERSION = next(
+    line.split('"')[1]
+    for line in (Path(__file__).parent.parent / "Cargo.toml").read_text().splitlines()
+    if line.startswith('version = "')
+)
+
 
 def receive(proc):
     ready, _, _ = select.select([proc.stdout], [], [], 10)
@@ -41,7 +47,7 @@ def assert_server_info(result):
     assert result["serverInfo"] == {
         "name": "rivet",
         "title": "Rivet",
-        "version": "0.1.0",
+        "version": CARGO_VERSION,
         "description": "Local MCP server for configured commands and allowed filesystem roots.",
         "websiteUrl": "https://github.com/agredyaev/rivet",
     }, result
@@ -52,9 +58,7 @@ def main():
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
         config = root / "rivet.toml"
-        config.write_text(f'''[filesystem]
-allowed_roots = [{json.dumps(tmp)}]
-[limits]
+        config.write_text('''[limits]
 max_stdout_bytes = 64
 max_stderr_bytes = 64
 max_file_read_bytes = 1024
@@ -65,28 +69,26 @@ max_timeout_ms = 5000
 [environment]
 pass = ["PATH"]
 allow_override = ["RIVET_TEST"]
-[commands.echo]
-executable = "/bin/echo"
-allow_any_args = true
-[commands.cat]
-executable = "/bin/cat"
-allow_any_args = true
-[commands.sh]
-executable = "/bin/sh"
-allowed_subcommands = ["-c"]
-[commands.env]
-executable = "/usr/bin/env"
-allow_any_args = true
 ''')
+        scope = ["--root", tmp,
+                 "--allow-command", "echo=/bin/echo", "--allow-any-args", "echo",
+                 "--allow-command", "cat=/bin/cat", "--allow-any-args", "cat",
+                 "--allow-command", "sh=/bin/sh", "--allow-subcommand", "sh=-c",
+                 "--allow-command", "env=/usr/bin/env", "--allow-any-args", "env"]
         for action in ("config-check", "doctor", "commands"):
-            assert subprocess.run([binary, action, "--config", config], capture_output=True).returncode == 0
+            assert subprocess.run([binary, action, "--config", config, *scope], capture_output=True).returncode == 0
         invalid = root / "invalid.toml"
-        invalid.write_text(config.read_text().replace('executable = "/bin/echo"', 'executable = "/missing-rivet-executable"'))
-        assert subprocess.run([binary, "config-check", "--config", invalid], capture_output=True).returncode != 0
-        invalid.write_text(config.read_text().replace('allow_any_args = true', 'allow_any_args = true\nallowed_subcommands = ["x"]', 1))
-        assert subprocess.run([binary, "config-check", "--config", invalid], capture_output=True).returncode != 0
+        invalid.write_text(config.read_text() + "unknown = true\n")
+        assert subprocess.run([binary, "config-check", "--config", invalid, *scope], capture_output=True).returncode != 0
+        assert subprocess.run([binary, "config-check", "--config", config, "--root", tmp], capture_output=True).returncode == 0
+        assert subprocess.run([binary, "config-check", "--config", config, "--root", tmp,
+                              "--allow-command", "missing=/missing-rivet-executable",
+                              "--allow-any-args", "missing"], capture_output=True).returncode != 0
+        assert subprocess.run([binary, "config-check", "--config", config, "--root", tmp,
+                              "--allow-command", "echo=/bin/echo", "--allow-any-args", "echo",
+                              "--allow-subcommand", "echo=x"], capture_output=True).returncode != 0
         portable = root / "portable.toml"
-        portable.write_text(config.read_text().replace(f'allowed_roots = [{json.dumps(tmp)}]', 'allowed_roots = []'))
+        portable.write_text(config.read_text())
         workspace = root / "workspace"
         other_root = root / "other"
         workspace.mkdir()
@@ -94,8 +96,9 @@ allow_any_args = true
         (workspace / "one.txt").write_text("one")
         (other_root / "two.txt").write_text("two")
         assert subprocess.run([binary, "config-check", "--config", portable], capture_output=True).returncode != 0
-        assert subprocess.run([binary, "config-check", "--config", portable, "--root", ".", "--root", other_root], cwd=workspace, capture_output=True).returncode == 0
-        scoped = subprocess.Popen([binary, "serve", "--config", portable, "--root", ".", "--root", other_root], cwd=workspace, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        roots_and_commands = ["--root", ".", "--root", str(other_root), *scope[2:]]
+        assert subprocess.run([binary, "config-check", "--config", portable, *roots_and_commands], cwd=workspace, capture_output=True).returncode == 0
+        scoped = subprocess.Popen([binary, "serve", "--config", portable, *roots_and_commands], cwd=workspace, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             assert_server_info(send(scoped, 1, "initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "smoke", "version": "1"}}))
             assert set(call(scoped, 101, "list_roots", {})["roots"]) == {str(workspace.resolve()), str(other_root.resolve())}
@@ -106,7 +109,7 @@ allow_any_args = true
         finally:
             scoped.stdin.close()
             assert scoped.wait(timeout=10) == 0
-        proc = subprocess.Popen([binary, "serve", "--config", config], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc = subprocess.Popen([binary, "serve", "--config", config, *scope], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             assert_server_info(send(proc, 1, "initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "smoke", "version": "1"}}))
             proc.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
@@ -222,7 +225,7 @@ allow_any_args = true
         assert not shutdown_marker.exists(), "server shutdown left a child process running"
         assert not proc.stdout.read(), "unexpected stdout"
         # An unterminated oversized line must close the transport without waiting for a newline.
-        oversized = subprocess.Popen([binary, "serve", "--config", config], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        oversized = subprocess.Popen([binary, "serve", "--config", config, *scope], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         oversized.stdin.write(b"x" * (1024 * 1024 + 1024 * 6 + 2))
         oversized.stdin.flush()
         oversized.stdin.close()
