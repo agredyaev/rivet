@@ -24,13 +24,23 @@ Write-Host 'Rivet setup' -ForegroundColor Cyan
 $architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
 if ($architecture -ne 'X64') { throw "Rivet releases currently support Windows x64 only; detected $architecture." }
 Write-Host '  Detected Windows x64' -ForegroundColor Yellow
-$releaseUri = "https://api.github.com/repos/$repo/releases/latest"
 $headers = @{ 'User-Agent' = 'Rivet Installer' }
-$release = Invoke-RestMethod -Uri $releaseUri -Headers $headers
-$tag = [string]$release.tag_name
-if ($tag -notmatch '^v?[A-Za-z0-9._-]+$') { throw 'GitHub returned an invalid release tag.' }
+$manifestUri = "https://raw.githubusercontent.com/$repo/main/.release-please-manifest.json"
+$manifest = Invoke-RestMethod -Uri $manifestUri -Headers $headers
+$versionProperty = $manifest.PSObject.Properties | Where-Object { $_.Name -eq '.' } | Select-Object -First 1
+$version = if ($versionProperty) { [string]$versionProperty.Value } else { '' }
+if ($version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$') {
+    throw 'Could not determine the release version from .release-please-manifest.json.'
+}
+$tag = "v$version"
 $asset = 'rivet-windows-x64.zip'
 $releaseBase = "https://github.com/$repo/releases/download/$tag"
+try {
+    Invoke-WebRequest -Uri "$releaseBase/$asset" -Method Head -Headers $headers | Out-Null
+}
+catch {
+    throw "Release $tag is not published or is missing $asset. Refusing to install an older release."
+}
 $tempDir = Join-Path ([System.IO.Path]::GetTempPath()) ("rivet-install-" + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $tempDir | Out-Null
 try {

@@ -53,7 +53,7 @@ The `session` command asks Rivet to collect the workspace and command scope for 
   --allow-subcommand git=diff
 ```
 
-Rivet downloads the latest stable `tunnel-client` and bundled `cloudflared` from the official OpenAI GitHub release, verifies the SHA-256 checksum, asks for the tunnel ID with visible input and the runtime API key with hidden input, then starts the tunnel with this scope. Create the tunnel and runtime key in OpenAI Platform using the links shown by Rivet. Keep the terminal open while you use Rivet through ChatGPT. The runtime key is requested each time and is not saved. The tunnel profile is temporary and removed when the session ends.
+Rivet downloads the latest stable `tunnel-client` and bundled `cloudflared` from the official OpenAI GitHub release, verifies the SHA-256 checksum, asks for the tunnel ID and runtime API key with hidden input, then starts the tunnel with this scope. Create the tunnel and runtime key in OpenAI Platform using the links shown by Rivet. Keep the terminal open while you use Rivet through ChatGPT. The runtime key is requested each time and is not saved. The tunnel profile is temporary and removed when the session ends.
 
 `rivet session` starts a remote tunnel. If your MCP host starts Rivet directly over stdio, use `bin/rivet` from the package (or `target/release/rivet` from a source build) and supply an existing workspace root:
 

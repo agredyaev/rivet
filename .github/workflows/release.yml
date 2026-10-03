@@ -4,91 +4,102 @@ on:
   workflow_call:
     inputs:
       tag:
-        description: Release tag to build
+        description: Existing release tag whose tested CI artifacts should be published
         required: true
         type: string
   workflow_dispatch:
     inputs:
       tag:
-        description: Existing release tag to build and update
+        description: Existing release tag whose tested CI artifacts should be published
         required: true
         type: string
 
 permissions:
-  contents: read
+  actions: read
+  contents: write
 
 jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: x86_64-unknown-linux-gnu
-            binary: rivet
-            asset: rivet-linux-x64.zip
-          - os: ubuntu-latest
-            target: aarch64-unknown-linux-gnu
-            binary: rivet
-            asset: rivet-linux-aarch64.zip
-          - os: macos-latest
-            target: aarch64-apple-darwin
-            binary: rivet
-            asset: rivet-darwin-arm64.zip
-          - os: ubuntu-latest
-            target: x86_64-pc-windows-gnu
-            binary: rivet.exe
-            asset: rivet-windows-x64.zip
-    runs-on: ${{ matrix.os }}
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          ref: ${{ inputs.tag }}
-      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
-        with:
-          targets: ${{ matrix.target }}
-      - if: runner.os == 'Linux'
-        run: python3 -m pip install cargo-zigbuild==0.23.4
-      - if: runner.os == 'Linux'
-        run: cargo zigbuild --locked --release --target ${{ matrix.target }}
-      - if: runner.os == 'macOS'
-        run: cargo build --locked --release --target ${{ matrix.target }}
-      - name: Package one-step installer
-        run: |
-          set -euo pipefail
-          package_dir=dist/package
-          mkdir -p "$package_dir/bin"
-          cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "$package_dir/bin/${{ matrix.binary }}"
-          cp rivet.example.toml "$package_dir/rivet.toml"
-          chmod +x "$package_dir/bin/${{ matrix.binary }}"
-          (cd "$package_dir" && zip -qr "../${{ matrix.asset }}" .)
-          entries=$(unzip -Z1 "dist/${{ matrix.asset }}")
-          printf '%s\n' "$entries" | grep -Fxq 'rivet.toml'
-          ! printf '%s\n' "$entries" | grep -Eq '(^|/)(scripts/|install\.sh$|install\.ps1$)'
-          printf '%s\n' "$entries" | grep -Fxq 'bin/${{ matrix.binary }}'
-      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
-        with:
-          name: release-${{ matrix.target }}
-          path: dist/${{ matrix.asset }}
-          if-no-files-found: error
-
   publish-assets:
-    needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     permissions:
+      actions: read
       contents: write
     steps:
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          pattern: release-*
-          path: dist
-          merge-multiple: true
-      - name: Replace binaries and checksum on GitHub Release
+      - name: Resolve tested CI run for release commit
+        id: ci
         env:
           GH_TOKEN: ${{ github.token }}
           GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
         run: |
-          (cd dist && sha256sum rivet-* > SHA256SUMS)
-          gh release upload "$TAG" dist/* --clobber
+          set -euo pipefail
+
+          ref_json="$(gh api "repos/$GH_REPO/git/ref/tags/$TAG")"
+          sha="$(jq -r '.object.sha' <<< "$ref_json")"
+          type="$(jq -r '.object.type' <<< "$ref_json")"
+          if [[ "$type" == "tag" ]]; then
+            tag_json="$(gh api "repos/$GH_REPO/git/tags/$sha")"
+            sha="$(jq -r '.object.sha' <<< "$tag_json")"
+          fi
+
+          runs="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$sha&event=push&per_page=20")"
+          run_id="$(jq -r '
+            .workflow_runs
+            | map(select(.head_branch == "main" and .status == "completed" and .conclusion == "success"))
+            | sort_by(.created_at)
+            | reverse
+            | .[0].id // empty
+          ' <<< "$runs")"
+
+          if [[ -z "$run_id" ]]; then
+            echo "::error::No successful CI push run found for release commit $sha."
+            exit 1
+          fi
+
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
+          echo "Using CI run $run_id for $sha"
+
+      - name: Download tested release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RUN_ID: ${{ steps.ci.outputs.run_id }}
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          gh run download "$RUN_ID" --repo "$GH_REPO" --name rivet-release-assets --dir dist
+
+      - name: Verify and publish existing CI artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ inputs.tag }}
+        run: |
+          set -euo pipefail
+
+          expected=(
+            rivet-linux-x64.zip
+            rivet-linux-aarch64.zip
+            rivet-darwin-arm64.zip
+            rivet-windows-x64.zip
+            SHA256SUMS
+          )
+          for asset in "${expected[@]}"; do
+            test -f "dist/$asset"
+          done
+
+          (cd dist && sha256sum -c SHA256SUMS)
+          gh release upload "$TAG" dist/rivet-*.zip dist/SHA256SUMS --clobber
+
+          release_assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
+          for asset in "${expected[@]}"; do
+            grep -Fxq "$asset" <<< "$release_assets"
+          done
+
+          latest="$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)"
+          if [[ "$latest" != "$TAG" ]]; then
+            echo "::error::Published release $TAG is not GitHub releases/latest (got $latest)."
+            exit 1
+          fi
