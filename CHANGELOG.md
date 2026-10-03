@@ -1,5 +1,15 @@
 # Changelog
 
+## [0.2.10](https://github.com/agredyaev/rivet/compare/v0.2.9...v0.2.10) (2026-10-03)
+
+
+### Bug Fixes
+
+* preserve PowerShell regex during installer update ([30d503d](https://github.com/agredyaev/rivet/commit/30d503d210ec7a7a9bf3dec66ae5d6fda7067d60))
+* refuse stale GitHub releases during install ([3bb52dd](https://github.com/agredyaev/rivet/commit/3bb52dd8e8859c66f1ff0ea8e3ffd45d23828e43))
+* refuse stale GitHub releases during install ([ffa0d3a](https://github.com/agredyaev/rivet/commit/ffa0d3ab843a7369a70ce31f9ed9b57c28e0bc4c))
+* repair PowerShell installer release selection ([bbe0bb3](https://github.com/agredyaev/rivet/commit/bbe0bb3b11f10caf7fe26e33a63c399cb0f0d3e3))
+
 ## [0.2.9](https://github.com/agredyaev/rivet/compare/v0.2.8...v0.2.9) (2026-10-03)
 
 
