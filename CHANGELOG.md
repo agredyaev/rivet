@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.9](https://github.com/agredyaev/rivet/compare/v0.2.8...v0.2.9) (2026-10-03)
+
+
+### Bug Fixes
+
+* bound tunnel setup steps and expose progress ([a2ac674](https://github.com/agredyaev/rivet/commit/a2ac674a076c39864e1e1d0c64819c281ba9f212))
+
 ## [0.2.8](https://github.com/agredyaev/rivet/compare/v0.2.7...v0.2.8) (2026-10-03)
 
 
