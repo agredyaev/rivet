@@ -16,53 +16,44 @@ Rivet implements an [MCP](https://modelcontextprotocol.io/) server over stdio. I
 
 ## Install and run
 
-Run one command from the workspace Rivet should access. Rivet displays built-in commands to select and lets you add a custom command with its executable and permitted first arguments. It downloads the latest verified release, installs it, asks for the tunnel ID and runtime API key, then starts a tunnel session:
+Run the command for your shell from the workspace Rivet should access. Rivet displays built-in commands to select and lets you add a custom command with its executable and permitted first arguments. It downloads the latest verified release, installs it, asks for the tunnel ID and runtime API key, then starts a tunnel session. The installer scripts are [`install.sh`](https://raw.githubusercontent.com/agredyaev/rivet/main/scripts/install.sh) and [`install.ps1`](https://raw.githubusercontent.com/agredyaev/rivet/main/scripts/install.ps1).
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/agredyaev/rivet/main/install.sh | bash -s -- --root "$PWD"
+curl -fsSL https://raw.githubusercontent.com/agredyaev/rivet/main/scripts/install.sh | bash -s -- --root "$PWD"
 ```
 
 Windows PowerShell:
 
 ```powershell
-& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/agredyaev/rivet/main/install.ps1'))) -Root (Get-Location).Path
+& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/agredyaev/rivet/main/scripts/install.ps1'))) -Root (Get-Location).Path
 ```
 
 The platform installers download the latest verified release and forward the workspace to Rivet. Rivet offers `uv`, `mkdir`, `rg`, and `make` with any arguments; `git` is limited to `status`, `diff`, `log`, `show`, `add`, `commit`, `rev-parse`, and `ls-files`; `cargo` is limited to `check`, `test`, `fmt`, `clippy`, and `metadata`. Enter multiple menu numbers separated by commas to select multiple built-ins. Select **Add a custom command** to add one or more commands, each with chosen first arguments or any arguments. Review the displayed scope before continuing. The installers detect the platform, verify the release ZIP with SHA-256, and install under `~/.local/share/rivet/<release>-<checksum>` or `%LOCALAPPDATA%\Rivet\<release>-<checksum>`. The scope applies only to the current session.
 
-The installer downloads the latest stable `tunnel-client` and bundled `cloudflared` from the official OpenAI GitHub release and verifies its SHA-256 checksum. Create the tunnel and runtime API key in OpenAI Platform using the links shown by the launcher. The runtime key is requested each time, entered with hidden input, and not saved. The temporary tunnel profile is removed when the session ends.
+During setup, Rivet downloads the latest stable `tunnel-client` and bundled `cloudflared` from the official OpenAI GitHub release and verifies its SHA-256 checksum. Create the tunnel and runtime API key in OpenAI Platform using the links shown by Rivet. The runtime key is requested each time, entered with hidden input, and not saved. The temporary tunnel profile is removed when the session ends.
 
-Manual release packages are available from [Releases](https://github.com/agredyaev/rivet/releases/latest):
-
-| OS | Architecture | Rust target | Release asset |
-| --- | --- | --- | --- |
-| Linux | x64 | `x86_64-unknown-linux-gnu` | `rivet-linux-x64.zip` |
-| Linux | aarch64 | `aarch64-unknown-linux-gnu` | `rivet-linux-aarch64.zip` |
-| macOS | arm64 | `aarch64-apple-darwin` | `rivet-darwin-arm64.zip` |
-| Windows | x64 | `x86_64-pc-windows-gnu` | `rivet-windows-x64.zip` |
-
-Each release package includes Rivet, a starter config, and the platform launchers. Manual download users can extract it and run the launcher directly:
+Manual downloads are available from [GitHub Releases](https://github.com/agredyaev/rivet/releases/latest). Extract a package and start an interactive session directly with the binary:
 
 ```sh
-./start-rivet.sh
+./bin/rivet session
 ```
 
 ```powershell
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\start-rivet.ps1
+powershell.exe -NoProfile -Command "& .\bin\rivet.exe session"
 ```
 
-The direct launcher asks Rivet to collect the workspace and command scope for one tunnel session. To set the root in advance, pass `--root`; Rivet still presents the command selector.
+The `session` command asks Rivet to collect the workspace and command scope for one tunnel session. To set the root in advance, pass `--root`; Rivet still presents the command selector.
 
 ```sh
-./start-rivet.sh --root /path/to/project \
+./bin/rivet session --root /path/to/project \
   --allow-command git=git \
   --allow-subcommand git=status \
   --allow-subcommand git=diff
 ```
 
-It downloads the latest stable `tunnel-client` and bundled `cloudflared` from the official OpenAI GitHub release, verifies the SHA-256 checksum, asks for the tunnel ID and runtime API key with hidden input, then starts the tunnel with this scope. Create the tunnel and runtime key in OpenAI Platform using the links shown by the launcher. Keep the terminal open while you use Rivet through ChatGPT. The runtime key is requested each time and is not saved. The tunnel profile is temporary and removed when the session ends.
+Rivet downloads the latest stable `tunnel-client` and bundled `cloudflared` from the official OpenAI GitHub release, verifies the SHA-256 checksum, asks for the tunnel ID and runtime API key with hidden input, then starts the tunnel with this scope. Create the tunnel and runtime key in OpenAI Platform using the links shown by Rivet. Keep the terminal open while you use Rivet through ChatGPT. The runtime key is requested each time and is not saved. The tunnel profile is temporary and removed when the session ends.
 
-The package launcher is for a remote tunnel. If your MCP host starts Rivet directly over stdio, use `bin/rivet` from the package (or `target/release/rivet` from a source build) and supply an existing workspace root:
+`rivet session` starts a remote tunnel. If your MCP host starts Rivet directly over stdio, use `bin/rivet` from the package (or `target/release/rivet` from a source build) and supply an existing workspace root:
 
 ```sh
 ./bin/rivet serve --config ./rivet.toml --root /path/to/project \
@@ -92,4 +83,4 @@ cd rivet
 cargo build --locked --release
 ```
 
-CI runs formatting, Clippy, tests, and smoke checks on macOS, Linux, and Windows. Linux x64/aarch64 and Windows x64 GNU builds use `cargo-zigbuild`; GitHub releases contain ZIP archives named `rivet-linux-x64.zip`, `rivet-linux-aarch64.zip`, `rivet-darwin-arm64.zip`, and `rivet-windows-x64.zip`.
+CI runs formatting, Clippy, tests, and smoke checks on macOS, Linux, and Windows. Linux x64/aarch64 and Windows x64 GNU builds use `cargo-zigbuild`.

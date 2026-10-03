@@ -2,7 +2,7 @@ use std::{
     env,
     io::{self, BufRead, IsTerminal, Write},
     path::{Path, PathBuf},
-    process::{Command, ExitCode},
+    process::ExitCode,
 };
 
 struct Scope {
@@ -244,45 +244,9 @@ fn package_root() -> Result<PathBuf, String> {
 
 fn launch(args: &[String]) -> Result<ExitCode, String> {
     let root = package_root()?;
-    let script_dir = if root.join("rivet/scripts/start-tunnel.sh").exists() {
-        root.join("rivet/scripts")
-    } else {
-        root.join("scripts")
-    };
-    #[cfg(windows)]
-    let status = {
-        let script = script_dir.join("start-tunnel.ps1");
-        let mut command = Command::new("powershell.exe");
-        command
-            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
-            .arg(script);
-        let mut values = args.iter();
-        while let Some(arg) = values.next() {
-            let value = values.next().ok_or("incomplete Rivet session arguments")?;
-            match arg.as_str() {
-                "--root" => command.args(["-Root", value]),
-                "--allow-command" => command.args(["-AllowCommand", value]),
-                "--allow-subcommand" => command.args(["-AllowSubcommand", value]),
-                "--allow-any-args" => command.args(["-AllowAnyArgs", value]),
-                _ => return Err(format!("unknown session argument: {arg}")),
-            };
-        }
-        command
-            .status()
-            .map_err(|error| format!("Could not start tunnel script: {error}"))?
-    };
-    #[cfg(not(windows))]
-    let status = Command::new("bash")
-        .arg(script_dir.join("start-tunnel.sh"))
-        .args(args)
-        .env("RIVET_PROJECT_DIR", &root)
-        .status()
-        .map_err(|error| format!("Could not start tunnel script: {error}"))?;
-    Ok(if status.success() {
-        ExitCode::SUCCESS
-    } else {
-        ExitCode::FAILURE
-    })
+    let rivet = env::current_exe().map_err(|error| error.to_string())?;
+    let config = root.join("rivet.toml");
+    Ok(crate::tunnel::run(&root, &rivet, &config, args))
 }
 
 pub fn run(args: Vec<String>) -> ExitCode {
