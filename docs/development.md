@@ -33,6 +33,12 @@ cargo zigbuild --locked --release \
 
 The CI workflow runs native builds and smoke tests on macOS, Linux, and Windows. It runs the cross-built Linux x64 binary on Ubuntu and Windows executable on Windows. Published GitHub releases contain `rivet-linux-x64.zip`, `rivet-linux-aarch64.zip`, `rivet-darwin-arm64.zip`, and `rivet-windows-x64.zip`; each archive contains the platform binary.
 
+## Releases
+
+Use `fix:` for a patch release, `feat:` for a minor release, and `!` or `BREAKING CHANGE:` for a breaking release. After changes reach `main`, release-please opens a release PR and updates `Cargo.toml`, `Cargo.lock`, the version manifest, and `CHANGELOG.md`. Merge that PR to create the GitHub Release; the same workflow then builds and uploads the platform archives and `SHA256SUMS`. Do not edit the package version by hand. To rebuild assets for an existing release, run the `Release` workflow manually with its tag.
+
+Release Please uses `GITHUB_TOKEN`, so its generated release PR does not start a separate `pull_request` workflow. Source changes run the full CI before reaching `main`; the release workflow builds all release targets from the generated tag. If repository rules later require CI checks directly on release PRs, configure a repository secret token for the action.
+
 ## Profiling
 
 The `profiling` Cargo profile keeps release optimization and debug symbols. On macOS, collect a CPU sample while measuring the MCP workload:
