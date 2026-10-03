@@ -14,6 +14,7 @@ on:
 
 jobs:
   build:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, 'chore(main): release ') }}
     strategy:
       fail-fast: false
       matrix:
@@ -78,6 +79,7 @@ jobs:
           if-no-files-found: error
 
   cross:
+    if: ${{ github.event_name != 'push' || !contains(github.event.head_commit.message, 'chore(main): release ') }}
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
@@ -98,6 +100,76 @@ jobs:
             target/aarch64-unknown-linux-gnu/release/rivet
             target/x86_64-pc-windows-gnu/release/rivet.exe
           if-no-files-found: error
+
+  release-merge:
+    if: ${{ github.event_name == 'push' && contains(github.event.head_commit.message, 'chore(main): release ') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    permissions:
+      actions: read
+      contents: read
+    steps:
+      - name: Wait for tested release-PR artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+
+          commit="$(gh api "repos/$GH_REPO/commits/$GITHUB_SHA")"
+          source_sha="$(jq -r '.parents[1].sha // empty' <<< "$commit")"
+          if [[ -z "$source_sha" ]]; then
+            echo "::error::Release merge has no second parent."
+            exit 1
+          fi
+
+          release_tree="$(gh api "repos/$GH_REPO/git/commits/$GITHUB_SHA" --jq .tree.sha)"
+          source_tree="$(gh api "repos/$GH_REPO/git/commits/$source_sha" --jq .tree.sha)"
+          if [[ "$release_tree" != "$source_tree" ]]; then
+            echo "::error::Release PR tree does not match the merged release tree."
+            exit 1
+          fi
+
+          for _ in $(seq 1 120); do
+            runs="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$source_sha&per_page=20")"
+            run_id="$(jq -r '
+              .workflow_runs
+              | map(select(.event == "pull_request"))
+              | sort_by(.created_at)
+              | reverse
+              | .[0].id // empty
+            ' <<< "$runs")"
+            status="$(jq -r --argjson id "${run_id:-0}" '
+              .workflow_runs
+              | map(select(.id == $id))
+              | .[0].status // empty
+            ' <<< "$runs")"
+            conclusion="$(jq -r --argjson id "${run_id:-0}" '
+              .workflow_runs
+              | map(select(.id == $id))
+              | .[0].conclusion // empty
+            ' <<< "$runs")"
+
+            if [[ -n "$run_id" && "$status" == "completed" ]]; then
+              if [[ "$conclusion" != "success" ]]; then
+                echo "::error::Release PR CI run $run_id completed with $conclusion."
+                exit 1
+              fi
+              artifact="$(gh api "repos/$GH_REPO/actions/runs/$run_id/artifacts" --jq '.artifacts[] | select(.name == "rivet-release-assets" and .expired == false) | .id' | head -n1)"
+              if [[ -z "$artifact" ]]; then
+                echo "::error::Release PR CI run $run_id has no rivet-release-assets artifact."
+                exit 1
+              fi
+              echo "Release PR CI $run_id is green and artifact $artifact is ready."
+              exit 0
+            fi
+
+            echo "Waiting for release PR CI for $source_sha..."
+            sleep 10
+          done
+
+          echo "::error::Timed out waiting for release PR CI for $source_sha."
+          exit 1
 
   verify-cross-windows:
     needs: cross

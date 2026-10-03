@@ -43,23 +43,43 @@ jobs:
             sha="$(jq -r '.object.sha' <<< "$tag_json")"
           fi
 
-          runs="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$sha&event=push&per_page=20")"
+          commit="$(gh api "repos/$GH_REPO/commits/$sha")"
+          source_sha="$(jq -r '.parents[1].sha // empty' <<< "$commit")"
+          if [[ -z "$source_sha" ]]; then
+            source_sha="$sha"
+          fi
+
+          release_tree="$(gh api "repos/$GH_REPO/git/commits/$sha" --jq .tree.sha)"
+          source_tree="$(gh api "repos/$GH_REPO/git/commits/$source_sha" --jq .tree.sha)"
+          if [[ "$release_tree" != "$source_tree" ]]; then
+            echo "::error::Tested source tree $source_tree does not match release tree $release_tree."
+            exit 1
+          fi
+
+          runs="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$source_sha&per_page=20")"
           run_id="$(jq -r '
             .workflow_runs
-            | map(select(.head_branch == "main" and .status == "completed" and .conclusion == "success"))
+            | map(select(.status == "completed" and .conclusion == "success"))
             | sort_by(.created_at)
             | reverse
             | .[0].id // empty
           ' <<< "$runs")"
 
           if [[ -z "$run_id" ]]; then
-            echo "::error::No successful CI push run found for release commit $sha."
+            echo "::error::No successful CI run found for tested source commit $source_sha."
+            exit 1
+          fi
+
+          artifact="$(gh api "repos/$GH_REPO/actions/runs/$run_id/artifacts" --jq '.artifacts[] | select(.name == "rivet-release-assets" and .expired == false) | .id' | head -n1)"
+          if [[ -z "$artifact" ]]; then
+            echo "::error::CI run $run_id has no rivet-release-assets artifact."
             exit 1
           fi
 
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          echo "Using CI run $run_id for $sha"
+          echo "Using tested CI run $run_id for $source_sha (release $sha)"
 
       - name: Download tested release assets
         env:
