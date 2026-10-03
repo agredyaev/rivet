@@ -90,17 +90,66 @@ fn executable(input: &str) -> Result<PathBuf, String> {
         #[cfg(not(windows))]
         let paths = vec![path];
         for path in paths {
-            if let Ok(canonical) = fs::canonicalize(path)
+            let path = if path.is_absolute() {
+                path
+            } else if let Ok(current_dir) = env::current_dir() {
+                current_dir.join(path)
+            } else {
+                continue;
+            };
+            if let Ok(canonical) = fs::canonicalize(&path)
                 && let Ok(meta) = fs::metadata(&canonical)
                 && executable_file(&meta)
             {
-                return Ok(canonical);
+                // Keep the resolved path's final component: tools such as
+                // rustup select their proxy behavior from argv[0] (`cargo`).
+                return Ok(path);
             }
         }
     }
     Err(format!(
         "executable {input:?} was not found or is not executable"
     ))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::executable;
+    use std::{
+        fs,
+        os::unix::fs::{PermissionsExt, symlink},
+        process::Command,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    #[test]
+    fn executable_preserves_symlink_name_when_launched() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir =
+            std::env::temp_dir().join(format!("rivet-executable-{}-{nonce}", std::process::id()));
+        fs::create_dir(&dir).unwrap();
+        let target = dir.join("rustup");
+        let shim = dir.join("cargo");
+        fs::write(&target, "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\"\n").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+        symlink(&target, &shim).unwrap();
+
+        let resolved = executable(shim.to_str().unwrap()).unwrap();
+        let output = Command::new(&resolved)
+            .args(["check", "-p", "mesh-compiler"])
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let mut lines = stdout.lines();
+        assert_eq!(lines.next(), Some(shim.to_str().unwrap()));
+        assert_eq!(lines.collect::<Vec<_>>(), ["check", "-p", "mesh-compiler"]);
+        fs::remove_dir_all(dir).unwrap();
+    }
 }
 
 fn executable_file(metadata: &fs::Metadata) -> bool {
