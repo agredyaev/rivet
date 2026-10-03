@@ -5,7 +5,6 @@
 
 ### Refactoring
 
-* simplify session setup and release publishing ([7b3ce5b](https://github.com/agredyaev/rivet/commit/7b3ce5b81c635214e2f13cace3b83a2fd9e43229))
 * simplify session setup and release publishing ([ffcf66c](https://github.com/agredyaev/rivet/commit/ffcf66c9000e3a0763e55b48bce2bc086b404fd8))
 
 ## [0.2.6](https://github.com/agredyaev/rivet/compare/v0.2.5...v0.2.6) (2026-10-03)
