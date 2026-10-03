@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.8](https://github.com/agredyaev/rivet/compare/v0.2.7...v0.2.8) (2026-10-03)
+
+
+### Bug Fixes
+
+* show tunnel id input during session setup ([667fbe4](https://github.com/agredyaev/rivet/commit/667fbe4600111be87667b39621a3dec8433b533d))
+
 ## [0.2.7](https://github.com/agredyaev/rivet/compare/v0.2.6...v0.2.7) (2026-10-03)
 
 
