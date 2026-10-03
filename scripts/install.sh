@@ -4,7 +4,7 @@ set +x
 umask 077
 
 repo='agredyaev/rivet'
-latest_url="https://github.com/$repo/releases/latest"
+manifest_url="https://raw.githubusercontent.com/$repo/main/.release-please-manifest.json"
 download_base="https://github.com/$repo/releases/download"
 install_root="${RIVET_INSTALL_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/rivet}"
 if [[ -t 1 && ${NO_COLOR+x} != x ]]; then
@@ -57,18 +57,22 @@ if [[ "$os" == 'darwin' && "$arch" != 'arm64' ]]; then
 fi
 asset="rivet-$os-$arch.zip"
 
-rivet_note 'Finding the latest Rivet release...'
-latest_location="$(curl -fsSIL -o /dev/null -w '%{url_effective}' "$latest_url")"
-tag="${latest_location##*/}"
-if [[ -z "$tag" || "$tag" == 'latest' || "$tag" == *'/'* ]]; then
-  rivet_error 'Could not determine the latest release tag.'
+rivet_note 'Resolving the Rivet version from main...'
+version="$(curl -fsSL "$manifest_url" | awk -F'"' '$2 == "." { print $4; exit }')"
+if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
+  rivet_error 'Could not determine the release version from .release-please-manifest.json.'
+  exit 1
+fi
+tag="v$version"
+release_url="$download_base/$tag"
+if ! curl -fsSIL -o /dev/null "$release_url/$asset"; then
+  rivet_error "Release $tag is not published or is missing $asset. Refusing to install an older release."
   exit 1
 fi
 rivet_ok "Release: $tag ($asset)"
 
 tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/rivet-install.XXXXXX")"
 trap 'rm -rf "$tmp_dir"' EXIT
-release_url="$download_base/$tag"
 curl -fsSL "$release_url/$asset" -o "$tmp_dir/$asset"
 curl -fsSL "$release_url/SHA256SUMS" -o "$tmp_dir/SHA256SUMS"
 expected="$(awk -v name="$asset" '$2 == name || $2 == "*" name { print $1; exit }' "$tmp_dir/SHA256SUMS")"
