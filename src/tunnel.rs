@@ -386,16 +386,10 @@ mod tests {
 
     #[test]
     fn validates_tunnel_id_format() {
-        assert!(valid_tunnel_id(
-            "tunnel_0123456789abcdef0123456789abcdef"
-        ));
+        assert!(valid_tunnel_id("tunnel_0123456789abcdef0123456789abcdef"));
         assert!(!valid_tunnel_id("tunnel_0123456789abcdef"));
-        assert!(!valid_tunnel_id(
-            "tunnel_0123456789abcdef0123456789abcdeg"
-        ));
-        assert!(!valid_tunnel_id(
-            "other__0123456789abcdef0123456789abcdef"
-        ));
+        assert!(!valid_tunnel_id("tunnel_0123456789abcdef0123456789abcdeg"));
+        assert!(!valid_tunnel_id("other__0123456789abcdef0123456789abcdef"));
     }
 
     #[test]
