@@ -1,12 +1,17 @@
-use std::{fs, process::Command, time::SystemTime};
+use std::{
+    fs,
+    process::Command,
+    time::{SystemTime, UNIX_EPOCH},
+};
 
 #[test]
 fn help_does_not_load_the_default_config() {
-    let directory = std::env::temp_dir().join(format!(
-        "rivet-cli-help-{}-{:?}",
-        std::process::id(),
-        SystemTime::now()
-    ));
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_nanos();
+    let directory =
+        std::env::temp_dir().join(format!("rivet-cli-help-{}-{nonce}", std::process::id()));
     fs::create_dir(&directory).unwrap();
     fs::write(directory.join("rivet.toml"), "[unsupported]\n").unwrap();
 
