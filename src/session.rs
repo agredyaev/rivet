@@ -10,10 +10,16 @@ struct Scope {
     commands: Vec<(String, String, Option<Vec<String>>)>,
 }
 
-const BUILT_INS: [(&str, &str, Option<&str>); 4] = [
-    ("git", "git", Some("status,diff,log,show,add,commit")),
-    ("cargo", "cargo", None),
+const BUILT_INS: [(&str, &str, Option<&str>); 6] = [
     ("uv", "uv", None),
+    ("mkdir", "mkdir", None),
+    ("rg", "rg", None),
+    (
+        "git",
+        "git",
+        Some("status,diff,log,show,add,commit,rev-parse,ls-files"),
+    ),
+    ("cargo", "cargo", Some("check,test,fmt,clippy,metadata")),
     ("make", "make", None),
 ];
 
@@ -80,22 +86,23 @@ fn collect_scope<R: BufRead, W: Write>(
             writeln!(output, "  {}. {name} ({permissions})", index + 1)
                 .map_err(|error| error.to_string())?;
         }
-        writeln!(output, "  Enter keeps all built-ins disabled.")
-            .map_err(|error| error.to_string())?;
+        writeln!(output, "  7. Add a custom command").map_err(|error| error.to_string())?;
+        writeln!(
+            output,
+            "  Select multiple items with commas (example: 1,3,7). Enter selects none."
+        )
+        .map_err(|error| error.to_string())?;
 
+        let add_custom;
         loop {
-            let selection = read_line(
-                input,
-                output,
-                "Select built-ins by number (comma-separated): ",
-            )
-            .map_err(|error| error.to_string())?;
+            let selection =
+                read_line(input, output, "Select items: ").map_err(|error| error.to_string())?;
             let mut chosen = Vec::new();
             let mut invalid = false;
             for item in selection.split(',').filter(|item| !item.trim().is_empty()) {
                 match item.trim().parse::<usize>() {
                     Ok(number)
-                        if (1..=BUILT_INS.len()).contains(&number)
+                        if (1..=BUILT_INS.len() + 1).contains(&number)
                             && !chosen.contains(&(number - 1)) =>
                     {
                         chosen.push(number - 1)
@@ -110,12 +117,13 @@ fn collect_scope<R: BufRead, W: Write>(
                 writeln!(
                     output,
                     "Enter distinct numbers from 1 to {}.",
-                    BUILT_INS.len()
+                    BUILT_INS.len() + 1
                 )
                 .map_err(|error| error.to_string())?;
                 continue;
             }
-            for index in chosen {
+            add_custom = chosen.contains(&BUILT_INS.len());
+            for index in chosen.into_iter().filter(|index| *index < BUILT_INS.len()) {
                 let (name, executable, access) = BUILT_INS[index];
                 let allowed = access.map(|items| items.split(',').map(str::to_owned).collect());
                 commands.push((name.to_owned(), executable.to_owned(), allowed));
@@ -123,52 +131,54 @@ fn collect_scope<R: BufRead, W: Write>(
             break;
         }
 
-        loop {
-            let add = read_line(input, output, "Add a custom command? [y/N]: ")
-                .map_err(|error| error.to_string())?;
-            if !matches!(add.to_ascii_lowercase().as_str(), "y" | "yes") {
-                break;
-            }
-            let name = read_line(input, output, "Command name (the name Rivet exposes): ")
-                .map_err(|error| error.to_string())?;
-            let executable = read_line(input, output, "Executable or path: ")
-                .map_err(|error| error.to_string())?;
-            if name.is_empty()
-                || executable.is_empty()
-                || name.chars().any(char::is_whitespace)
-                || name.contains('=')
-                || commands.iter().any(|(existing, _, _)| existing == &name)
-            {
-                writeln!(
+        if add_custom {
+            loop {
+                let name = read_line(input, output, "Command name (the name Rivet exposes): ")
+                    .map_err(|error| error.to_string())?;
+                let executable = read_line(input, output, "Executable or path: ")
+                    .map_err(|error| error.to_string())?;
+                if name.is_empty()
+                    || executable.is_empty()
+                    || name.chars().any(char::is_whitespace)
+                    || name.contains('=')
+                    || commands.iter().any(|(existing, _, _)| existing == &name)
+                {
+                    writeln!(
                     output,
                 "Name and executable must be nonempty; names cannot contain spaces, '=', or repeat."
                 )
                 .map_err(|error| error.to_string())?;
-                continue;
-            }
-            let allowed = loop {
-                let value = read_line(
-                    input,
-                    output,
-                    "Allowed first arguments (comma-separated, or * for any): ",
-                )
-                .map_err(|error| error.to_string())?;
-                if value == "*" {
-                    break None;
+                    continue;
                 }
-                let items: Vec<_> = value
-                    .split(',')
-                    .map(str::trim)
-                    .filter(|item| !item.is_empty())
-                    .map(str::to_owned)
-                    .collect();
-                if !items.is_empty() && items.len() == value.split(',').count() {
-                    break Some(items);
-                }
-                writeln!(output, "Enter one or more arguments, or *.")
+                let allowed = loop {
+                    let value = read_line(
+                        input,
+                        output,
+                        "Allowed first arguments (comma-separated, or * for any): ",
+                    )
                     .map_err(|error| error.to_string())?;
-            };
-            commands.push((name, executable, allowed));
+                    if value == "*" {
+                        break None;
+                    }
+                    let items: Vec<_> = value
+                        .split(',')
+                        .map(str::trim)
+                        .filter(|item| !item.is_empty())
+                        .map(str::to_owned)
+                        .collect();
+                    if !items.is_empty() && items.len() == value.split(',').count() {
+                        break Some(items);
+                    }
+                    writeln!(output, "Enter one or more arguments, or *.")
+                        .map_err(|error| error.to_string())?;
+                };
+                commands.push((name, executable, allowed));
+                let add_another = read_line(input, output, "Add another custom command? [y/N]: ")
+                    .map_err(|error| error.to_string())?;
+                if !matches!(add_another.to_ascii_lowercase().as_str(), "y" | "yes") {
+                    break;
+                }
+            }
         }
     } else {
         writeln!(
@@ -354,22 +364,30 @@ mod tests {
     #[test]
     fn selection_builds_builtin_and_custom_scope() {
         let cwd = env::current_dir().unwrap();
-        let input = Cursor::new("\n1,3\ny\nhttp\ncurl\nGET,HEAD\nn\n");
+        let input = Cursor::new("\n3,4,5,7\nhttp\ncurl\nGET,HEAD\ny\nhello\nprintf\n*\nn\n");
         let mut input = input;
         let mut output = Vec::new();
         let scope = collect_scope(&mut input, &mut output, &cwd, &[], true, false).unwrap();
         let args = scope_args(&scope);
         assert!(args.iter().any(|arg| arg == "git=status"));
-        assert!(args.iter().any(|arg| arg == "uv=uv"));
+        assert!(args.iter().any(|arg| arg == "git=rev-parse"));
+        assert!(args.iter().any(|arg| arg == "git=ls-files"));
+        assert!(args.iter().any(|arg| arg == "cargo=check"));
+        assert!(args.iter().any(|arg| arg == "cargo=metadata"));
+        assert!(args.iter().any(|arg| arg == "rg=rg"));
         assert!(args.iter().any(|arg| arg == "http=curl"));
         assert!(args.iter().any(|arg| arg == "http=GET"));
         assert!(args.iter().any(|arg| arg == "http=HEAD"));
+        assert!(args.iter().any(|arg| arg == "hello=printf"));
+        assert!(args.iter().any(|arg| arg == "--allow-any-args"));
         assert!(
             !args
                 .iter()
-                .any(|arg| arg == "cargo=cargo" || arg == "make=make")
+                .any(|arg| arg == "uv=uv" || arg == "mkdir=mkdir" || arg == "make=make")
         );
         let rendered = String::from_utf8(output).unwrap();
+        assert!(rendered.contains("7. Add a custom command"));
+        assert!(rendered.contains("1,3,7"));
         assert!(rendered.contains("git → git"));
         assert!(rendered.contains("http → curl"));
     }
