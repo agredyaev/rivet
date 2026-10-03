@@ -35,7 +35,7 @@ The CI workflow runs native builds and smoke tests on macOS, Linux, and Windows.
 
 ## Releases
 
-Use `fix:` for a patch release, `feat:` for a minor release, and `!` or `BREAKING CHANGE:` for a breaking release. After changes reach `main`, release-please opens a release PR and updates `Cargo.toml`, `Cargo.lock`, the version manifest, and `CHANGELOG.md`. Merge that PR to create the GitHub Release; the same workflow then builds and uploads the platform archives and `SHA256SUMS`. Do not edit the package version by hand. To rebuild assets for an existing release, run the `Release` workflow manually with its tag.
+Use `fix:`, `perf:`, or `refactor:` for a patch release, `feat:` for a minor release, and `!` or `BREAKING CHANGE:` for a breaking release. After changes reach `main`, release-please opens a release PR and updates `Cargo.toml`, `Cargo.lock`, the version manifest, and `CHANGELOG.md`. Merge that PR to create the GitHub Release; the same workflow then builds and uploads the platform archives and `SHA256SUMS`. Do not edit the package version by hand. To rebuild assets for an existing release, run the `Release` workflow manually with its tag.
 
 Release Please uses `GITHUB_TOKEN`, so its generated release PR does not start a separate `pull_request` workflow. Source changes run the full CI before reaching `main`; the release workflow builds all release targets from the generated tag. If repository rules later require CI checks directly on release PRs, configure a repository secret token for the action.
 
