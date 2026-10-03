@@ -90,5 +90,16 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
         run: |
+          set -euo pipefail
           (cd dist && sha256sum rivet-* > SHA256SUMS)
           gh release upload "$TAG" dist/* --clobber
+
+          for asset in rivet-linux-x64.zip rivet-linux-aarch64.zip rivet-darwin-arm64.zip rivet-windows-x64.zip SHA256SUMS; do
+            gh release view "$TAG" --json assets --jq '.assets[].name' | grep -Fxq "$asset"
+          done
+
+          latest="$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)"
+          if [[ "$latest" != "$TAG" ]]; then
+            echo "::error::Published release $TAG is not GitHub releases/latest (got $latest)."
+            exit 1
+          fi
