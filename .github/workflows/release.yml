@@ -57,14 +57,16 @@ jobs:
           mkdir -p "$package_dir/bin" "$package_dir/rivet"
           cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "$package_dir/bin/${{ matrix.binary }}"
           cp rivet.example.toml "$package_dir/rivet.toml"
-          cp install.sh install.ps1 start-rivet.sh start-rivet.ps1 "$package_dir/"
+          cp install.sh install.ps1 install-session.sh install-session.ps1 start-rivet.sh start-rivet.ps1 "$package_dir/"
           cp -R scripts "$package_dir/rivet/"
-          chmod +x "$package_dir/start-rivet.sh" "$package_dir/bin/${{ matrix.binary }}" "$package_dir/rivet/scripts/"*.sh
+          chmod +x "$package_dir/install-session.sh" "$package_dir/start-rivet.sh" "$package_dir/bin/${{ matrix.binary }}" "$package_dir/rivet/scripts/"*.sh
           (cd "$package_dir" && zip -qr "../${{ matrix.asset }}" .)
           entries=$(unzip -Z1 "dist/${{ matrix.asset }}")
           printf '%s\n' "$entries" | grep -Fxq 'rivet.toml'
           printf '%s\n' "$entries" | grep -Fxq 'install.sh'
           printf '%s\n' "$entries" | grep -Fxq 'install.ps1'
+          printf '%s\n' "$entries" | grep -Fxq 'install-session.sh'
+          printf '%s\n' "$entries" | grep -Fxq 'install-session.ps1'
           printf '%s\n' "$entries" | grep -Fxq 'start-rivet.sh'
           printf '%s\n' "$entries" | grep -Fxq 'start-rivet.ps1'
           printf '%s\n' "$entries" | grep -Fxq 'rivet/scripts/sync-tunnel-client.sh'
