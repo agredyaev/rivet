@@ -7,6 +7,7 @@ mod config;
 mod filesystem;
 mod mcp;
 mod process;
+mod session;
 
 use std::{collections::BTreeMap, env, path::PathBuf, process::ExitCode, sync::Arc};
 
@@ -36,6 +37,9 @@ async fn main() -> ExitCode {
         );
         return ExitCode::FAILURE;
     };
+    if action == "session" {
+        return session::run(args.collect());
+    }
     let mut path = PathBuf::from("./rivet.toml");
     let mut roots = Vec::new();
     let mut command_args: BTreeMap<String, PendingCommand> = BTreeMap::new();
