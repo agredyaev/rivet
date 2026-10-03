@@ -90,19 +90,5 @@ jobs:
           GH_REPO: ${{ github.repository }}
           TAG: ${{ inputs.tag }}
         run: |
-          existing_assets=$(gh release view "$TAG" --json assets --jq '.assets[].name')
-          while IFS= read -r asset; do
-            case "$asset" in
-              rivet-x86_64-unknown-linux-gnu|\
-              rivet-aarch64-unknown-linux-gnu|\
-              rivet-aarch64-apple-darwin|\
-              rivet-x86_64-pc-windows-gnu.exe|\
-              rivet-linux-x64|rivet-linux-aarch64|rivet-macos-arm64|rivet-windows-x64.exe|\
-              rivet-linux-x64.zip|rivet-linux-aarch64.zip|rivet-darwin-arm64.zip|rivet-windows-x64.zip|\
-              SHA256SUMS)
-                gh release delete-asset "$TAG" "$asset" --yes
-                ;;
-            esac
-          done <<< "$existing_assets"
           (cd dist && sha256sum rivet-* > SHA256SUMS)
           gh release upload "$TAG" dist/* --clobber

@@ -228,9 +228,6 @@ fn scope_args(scope: &Scope) -> Vec<String> {
 }
 
 fn package_root() -> Result<PathBuf, String> {
-    if let Some(path) = env::var_os("RIVET_PROJECT_DIR") {
-        return Ok(PathBuf::from(path));
-    }
     let executable = env::current_exe().map_err(|error| error.to_string())?;
     let root = executable
         .parent()
@@ -251,9 +248,7 @@ fn launch(args: &[String]) -> Result<ExitCode, String> {
 
 pub fn run(args: Vec<String>) -> ExitCode {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
-        println!(
-            "Usage: rivet session [--root PATH] [--allow-command NAME=EXECUTABLE] [--allow-subcommand NAME=VALUE] [--allow-any-args NAME]\nWithout command flags, Rivet prompts for built-in and custom commands."
-        );
+        crate::print_usage(Some("session"));
         return ExitCode::SUCCESS;
     }
     let mut roots = Vec::new();
