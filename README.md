@@ -8,15 +8,24 @@
 ![Zig](https://img.shields.io/badge/Zig-cross--compilation-F7A41D?style=for-the-badge&logo=zig&logoColor=white)
 ![MCP stdio](https://img.shields.io/badge/MCP-stdio-0EA5E9?style=for-the-badge)
 
-![Windows](https://img.shields.io/badge/Windows-x64-0078D4?style=for-the-badge)
-![Linux](https://img.shields.io/badge/Linux-x64-FCC624?style=for-the-badge&logo=linux&logoColor=black)
-![macOS](https://img.shields.io/badge/macOS-arm64-18181B?style=for-the-badge&logo=apple&logoColor=white)
+![Windows](https://img.shields.io/badge/Windows-x86__64-0078D4?style=for-the-badge)
+![Linux](https://img.shields.io/badge/Linux-x86__64%20%7C%20aarch64-FCC624?style=for-the-badge&logo=linux&logoColor=black)
+![macOS](https://img.shields.io/badge/macOS-aarch64-18181B?style=for-the-badge&logo=apple&logoColor=white)
 
 Rivet implements an [MCP](https://modelcontextprotocol.io/) server over stdio. It exposes configured commands, file operations within configured roots, and long-running child processes. It does not listen on a network port.
 
 ## Install and run
 
-Download the binary for your platform from [Releases](https://github.com/agredyaev/rivet/releases/latest) and download [`rivet.example.toml`](rivet.example.toml). Release assets are `rivet-macos-arm64`, `rivet-linux-x64`, and `rivet-windows-x64.exe`. On macOS or Linux, rename the downloaded file to `rivet`. On Windows, keep the `.exe` extension.
+Download the matching binary from [Releases](https://github.com/agredyaev/rivet/releases/latest) and download [`rivet.example.toml`](rivet.example.toml):
+
+| OS | Architecture | Rust target | Release asset |
+| --- | --- | --- | --- |
+| Linux | x86_64 | `x86_64-unknown-linux-gnu` | `rivet-x86_64-unknown-linux-gnu` |
+| Linux | aarch64 | `aarch64-unknown-linux-gnu` | `rivet-aarch64-unknown-linux-gnu` |
+| macOS | arm64 (aarch64) | `aarch64-apple-darwin` | `rivet-aarch64-apple-darwin` |
+| Windows | x86_64 | `x86_64-pc-windows-gnu` | `rivet-x86_64-pc-windows-gnu.exe` |
+
+On macOS or Linux, rename the downloaded file to `rivet`. On Windows, keep the `.exe` extension.
 
 Copy the example file to `rivet.toml`. Set `filesystem.allowed_roots` to an existing absolute directory. The example uses `[]`, which Rivet rejects until you add a root.
 
@@ -70,4 +79,4 @@ cd rivet
 cargo build --locked --release
 ```
 
-CI runs formatting, Clippy, tests, and smoke checks on macOS, Linux, and Windows. The Linux and Windows x64 release targets are cross-compiled with `cargo-zigbuild` and smoke-tested on their target systems.
+CI runs formatting, Clippy, tests, and smoke checks on macOS, Linux, and Windows. Linux x86_64/aarch64 and Windows x86_64 GNU builds use `cargo-zigbuild`; GitHub releases contain binaries for those targets plus macOS arm64.

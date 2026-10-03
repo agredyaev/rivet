@@ -20,17 +20,18 @@ CI runs Clippy for all targets with `-D warnings`. The checked-in source has no 
 
 ## Cross-compilation
 
-CI installs `cargo-zigbuild` and builds Linux x64 and Windows x64 GNU targets on Ubuntu:
+CI installs `cargo-zigbuild` and builds Linux x86_64, Linux aarch64, and Windows x86_64 GNU targets on Ubuntu:
 
 ```sh
 python3 -m pip install cargo-zigbuild==0.22.1
-rustup target add x86_64-unknown-linux-gnu x86_64-pc-windows-gnu
+rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-gnu
 cargo zigbuild --locked --release \
   --target x86_64-unknown-linux-gnu \
+  --target aarch64-unknown-linux-gnu \
   --target x86_64-pc-windows-gnu
 ```
 
-The CI workflow runs native builds and smoke tests on macOS, Linux, and Windows. It runs the cross-built Linux binary on Ubuntu and Windows executable on Windows, then uploads both as `rivet-cross-x64`.
+The CI workflow runs native builds and smoke tests on macOS, Linux, and Windows. It runs the cross-built Linux x86_64 binary on Ubuntu and Windows executable on Windows. Published GitHub releases include Linux x86_64/aarch64, macOS arm64, and Windows x86_64 binaries named with their Rust target triples.
 
 ## Profiling
 

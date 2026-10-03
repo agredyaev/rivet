@@ -38,15 +38,16 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
-          targets: x86_64-unknown-linux-gnu, x86_64-pc-windows-gnu
+          targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-gnu
       - run: python3 -m pip install cargo-zigbuild==0.22.1
-      - run: cargo zigbuild --locked --release --target x86_64-unknown-linux-gnu --target x86_64-pc-windows-gnu
+      - run: cargo zigbuild --locked --release --target x86_64-unknown-linux-gnu --target aarch64-unknown-linux-gnu --target x86_64-pc-windows-gnu
       - run: python3 tests/smoke.py target/x86_64-unknown-linux-gnu/release/rivet
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: rivet-cross-x64
+          name: rivet-cross-targets
           path: |
             target/x86_64-unknown-linux-gnu/release/rivet
+            target/aarch64-unknown-linux-gnu/release/rivet
             target/x86_64-pc-windows-gnu/release/rivet.exe
           if-no-files-found: error
 
@@ -60,6 +61,6 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: rivet-cross-x64
+          name: rivet-cross-targets
           path: cross
       - run: python tests/portable_smoke.py cross/x86_64-pc-windows-gnu/release/rivet.exe

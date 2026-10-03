@@ -1,0 +1,87 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: Existing release tag to build and update
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            binary: rivet
+            asset: rivet-x86_64-unknown-linux-gnu
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            binary: rivet
+            asset: rivet-aarch64-unknown-linux-gnu
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            binary: rivet
+            asset: rivet-aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-pc-windows-gnu
+            binary: rivet.exe
+            asset: rivet-x86_64-pc-windows-gnu.exe
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          targets: ${{ matrix.target }}
+      - if: runner.os == 'Linux'
+        run: python3 -m pip install cargo-zigbuild==0.22.1
+      - if: runner.os == 'Linux'
+        run: cargo zigbuild --locked --release --target ${{ matrix.target }}
+      - if: runner.os == 'macOS'
+        run: cargo build --locked --release --target ${{ matrix.target }}
+      - run: |
+          mkdir dist
+          cp target/${{ matrix.target }}/release/${{ matrix.binary }} dist/${{ matrix.asset }}
+      - uses: actions/upload-artifact@ea165f8f65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: release-${{ matrix.target }}
+          path: dist/${{ matrix.asset }}
+          if-no-files-found: error
+
+  publish-assets:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          pattern: release-*
+          path: dist
+          merge-multiple: true
+      - name: Replace binaries and checksum on GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
+        run: |
+          existing_assets=$(gh release view "$TAG" --json assets --jq '.assets[].name')
+          while IFS= read -r asset; do
+            case "$asset" in
+              rivet-linux-x64|rivet-macos-arm64|rivet-windows-x64.exe|SHA256SUMS)
+                gh release delete-asset "$TAG" "$asset" --yes
+                ;;
+            esac
+          done <<< "$existing_assets"
+          (cd dist && sha256sum rivet-* > SHA256SUMS)
+          gh release upload "$TAG" dist/* --clobber
