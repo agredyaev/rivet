@@ -66,6 +66,16 @@ jobs:
           $help = & pwsh -NoProfile -File "$env:GITHUB_WORKSPACE/scripts/install.ps1" -Help 2>&1 | Out-String
           if ($LASTEXITCODE -ne 0) { throw 'PowerShell installer -Help failed.' }
           if ($help -notmatch '-AllowAnyArgs') { throw 'PowerShell installer help omits -AllowAnyArgs.' }
+      - if: runner.os == 'macOS'
+        run: |
+          rustup target add aarch64-apple-darwin
+          cargo build --locked --release --target aarch64-apple-darwin
+      - if: runner.os == 'macOS'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rivet-macos-target
+          path: target/aarch64-apple-darwin/release/rivet
+          if-no-files-found: error
 
   cross:
     runs-on: ubuntu-latest
@@ -102,3 +112,58 @@ jobs:
           name: rivet-cross-targets
           path: cross
       - run: python tests/portable_smoke.py cross/x86_64-pc-windows-gnu/release/rivet.exe
+
+  release-artifacts:
+    needs: [build, cross, verify-cross-windows]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: rivet-cross-targets
+          path: staged/cross
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: rivet-macos-target
+          path: staged/macos
+      - name: Package tested release assets
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+
+          package() {
+            binary="$1"
+            binary_name="$2"
+            asset="$3"
+            package_dir="$(mktemp -d)"
+            mkdir -p "$package_dir/bin"
+            cp "$binary" "$package_dir/bin/$binary_name"
+            cp rivet.example.toml "$package_dir/rivet.toml"
+            chmod +x "$package_dir/bin/$binary_name"
+            (cd "$package_dir" && zip -qr "$GITHUB_WORKSPACE/dist/$asset" .)
+            rm -rf "$package_dir"
+
+            entries="$(unzip -Z1 "dist/$asset")"
+            printf '%s\n' "$entries" | grep -Fxq 'rivet.toml'
+            printf '%s\n' "$entries" | grep -Fxq "bin/$binary_name"
+            ! printf '%s\n' "$entries" | grep -Eq '(^|/)(scripts/|install\.sh$|install\.ps1$)'
+          }
+
+          package staged/cross/x86_64-unknown-linux-gnu/release/rivet rivet rivet-linux-x64.zip
+          package staged/cross/aarch64-unknown-linux-gnu/release/rivet rivet rivet-linux-aarch64.zip
+          package staged/cross/x86_64-pc-windows-gnu/release/rivet.exe rivet.exe rivet-windows-x64.zip
+          package staged/macos/rivet rivet rivet-darwin-arm64.zip
+
+          (cd dist && sha256sum rivet-*.zip > SHA256SUMS)
+          (cd dist && sha256sum -c SHA256SUMS)
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: rivet-release-assets
+          path: |
+            dist/rivet-*.zip
+            dist/SHA256SUMS
+          if-no-files-found: error
+          retention-days: 30
