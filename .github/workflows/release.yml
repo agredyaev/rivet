@@ -45,7 +45,7 @@ jobs:
         with:
           targets: ${{ matrix.target }}
       - if: runner.os == 'Linux'
-        run: python3 -m pip install cargo-zigbuild==0.22.1
+        run: python3 -m pip install cargo-zigbuild==0.23.4
       - if: runner.os == 'Linux'
         run: cargo zigbuild --locked --release --target ${{ matrix.target }}
       - if: runner.os == 'macOS'

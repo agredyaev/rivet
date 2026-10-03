@@ -23,7 +23,7 @@ CI runs Clippy for all targets with `-D warnings`. The checked-in source has no 
 CI installs `cargo-zigbuild` and builds Linux x86_64, Linux aarch64, and Windows x86_64 GNU targets on Ubuntu:
 
 ```sh
-python3 -m pip install cargo-zigbuild==0.22.1
+python3 -m pip install cargo-zigbuild==0.23.4
 rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-gnu
 cargo zigbuild --locked --release \
   --target x86_64-unknown-linux-gnu \

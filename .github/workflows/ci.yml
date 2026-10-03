@@ -45,7 +45,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-gnu
-      - run: python3 -m pip install cargo-zigbuild==0.22.1
+      - run: python3 -m pip install cargo-zigbuild==0.23.4
       - run: cargo zigbuild --locked --release --target x86_64-unknown-linux-gnu --target aarch64-unknown-linux-gnu --target x86_64-pc-windows-gnu
       - run: python3 tests/smoke.py target/x86_64-unknown-linux-gnu/release/rivet
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
