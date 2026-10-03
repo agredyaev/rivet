@@ -31,9 +31,20 @@ jobs:
       - run: cargo test --locked
       - run: cargo build --locked --release
       - if: runner.os != 'Windows'
+        run: bash -n scripts/start-tunnel.sh
+      - if: runner.os != 'Windows'
         run: python3 tests/smoke.py target/release/rivet
       - if: runner.os == 'Windows'
         run: python tests/portable_smoke.py target/release/rivet.exe
+      - if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          foreach ($path in @("$env:GITHUB_WORKSPACE/scripts/start-tunnel.ps1", "$env:GITHUB_WORKSPACE/scripts/serve-rivet-mcp.ps1")) {
+            $tokens = $null
+            $errors = $null
+            [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors) | Out-Null
+            if ($errors.Count) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
+          }
 
   cross:
     runs-on: ubuntu-latest

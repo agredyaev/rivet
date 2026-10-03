@@ -58,7 +58,7 @@ If you built from source, use `target/release/rivet` (or `target\release\rivet.e
 ./rivet serve --config /path/to/rivet.toml --root /path/to/project
 ```
 
-Follow [MCP client setup](docs/mcp-setup.md) to register Rivet in Codex, ChatGPT Desktop, or ChatGPT Web. The guide also explains the tunnel required by ChatGPT Web. Keep `rivet.toml` private because it contains local paths and the command allowlist.
+Follow [MCP setup](docs/mcp-setup.md) to connect Rivet to ChatGPT through Secure MCP Tunnel. The guide includes Bash and PowerShell launch scripts. Keep `rivet.toml` private because it contains local paths and the command allowlist.
 
 ## Documentation
 
