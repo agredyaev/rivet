@@ -73,6 +73,7 @@ jobs:
       - name: Replace binaries and checksum on GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
           TAG: ${{ github.event.release.tag_name || github.event.inputs.tag }}
         run: |
           existing_assets=$(gh release view "$TAG" --json assets --jq '.assets[].name')
