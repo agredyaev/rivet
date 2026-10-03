@@ -16,7 +16,7 @@ On Windows, CI uses `tests/portable_smoke.py` with the native Windows executable
 
 ## Clippy
 
-CI runs Clippy for all targets with `-D warnings`. The source currently has no `#[allow(clippy::...)]` suppressions. If a suppression becomes necessary, keep it scoped to the smallest item and explain its reason beside the attribute; do not silence warnings crate-wide.
+CI runs Clippy for all targets with `-D warnings`. The checked-in source has no `#[allow(clippy::...)]` attributes. Keep any future suppression on the smallest affected item and put its reason beside the attribute; do not add a crate-wide suppression.
 
 ## Cross-compilation
 

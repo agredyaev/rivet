@@ -26,11 +26,11 @@ Rivet exposes these tools over MCP stdio. Paths and command working directories 
 
 `start_process` returns `process_id`. `read_process_output` accepts `process_id`, optional `stdout_offset`, `stderr_offset`, and `limit`; offsets are byte positions. The response includes text, next offsets, total byte counts, and truncation state. `send_process_input` accepts `process_id` and UTF-8 `text`. `stop_process` accepts `process_id`.
 
-Process state exists only while the Rivet server is running. Completed entries may be evicted when the configured process table is full.
+Process state exists only while the Rivet server is running. When the process table is full, Rivet evicts the oldest completed entry before refusing a new process.
 
 ## Files
 
-`list_directory` accepts an absolute `path` and optional `depth` and `max_entries`. Depth is limited to 16; the entry count cannot exceed `max_directory_entries`.
+`list_directory` accepts an absolute `path` and optional `depth` and `max_entries`. Depth must be 1–16; the entry count cannot exceed `max_directory_entries`. Each entry has a path and a type (`file`, `directory`, or `symlink`). The response includes `truncated` when more entries exist than the limit allows.
 
 `read_file` accepts an absolute `path` and optional byte `offset` and `limit`. Reads are bounded by `max_file_read_bytes`; offsets that split a UTF-8 character are rejected.
 
@@ -38,4 +38,4 @@ Process state exists only while the Rivet server is running. Completed entries m
 
 `replace_text` accepts `path`, `old`, `new`, `expected_occurrences`, and optional `expected_sha256`. The file is changed only when the number of exact matches equals `expected_occurrences` and the optional hash matches.
 
-Tool errors include a `code`, a human-readable `message`, and optional `details`. Codes currently used include `INVALID_REQUEST`, `PATH_DENIED`, `COMMAND_NOT_FOUND`, `COMMAND_DENIED`, `SUBCOMMAND_DENIED`, `COMMAND_TIMEOUT`, `PROCESS_NOT_FOUND`, `PROCESS_LIMIT`, `OUTPUT_LIMIT`, `FILE_CHANGED`, `IO_ERROR`, and `SPAWN_ERROR`. CLI configuration failures print `CONFIG_ERROR` to stderr.
+Tool errors include a `code`, a human-readable `message`, and optional `details`. The implementation returns `INVALID_REQUEST`, `PATH_DENIED`, `COMMAND_NOT_FOUND`, `COMMAND_DENIED`, `SUBCOMMAND_DENIED`, `COMMAND_TIMEOUT`, `PROCESS_NOT_FOUND`, `PROCESS_LIMIT`, `OUTPUT_LIMIT`, `FILE_CHANGED`, `IO_ERROR`, or `SPAWN_ERROR`. CLI configuration failures print `CONFIG_ERROR` to stderr.

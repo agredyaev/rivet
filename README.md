@@ -12,26 +12,32 @@
 ![Linux](https://img.shields.io/badge/Linux-x64-FCC624?style=for-the-badge&logo=linux&logoColor=black)
 ![macOS](https://img.shields.io/badge/macOS-arm64-18181B?style=for-the-badge&logo=apple&logoColor=white)
 
-Rivet is a local [MCP](https://modelcontextprotocol.io/) server. It lets an MCP client access configured commands, files, and long-running processes over standard input and output. Rivet does not open a network port; connect remote clients through a separate tunnel service.
+Rivet implements an [MCP](https://modelcontextprotocol.io/) server over stdio. It exposes configured commands, file operations within configured roots, and long-running child processes. It does not listen on a network port.
 
 ## Install and run
 
-Download the binary for your platform from [Releases](https://github.com/agredyaev/rivet/releases/latest) and get the [example configuration](rivet.example.toml). The current release includes macOS arm64, Linux x64, and Windows x64 builds. On macOS or Linux, rename the binary to `rivet` and make it executable. On Windows, keep the name `rivet.exe`.
+Download the binary for your platform from [Releases](https://github.com/agredyaev/rivet/releases/latest) and download [`rivet.example.toml`](rivet.example.toml). Release assets are `rivet-macos-arm64`, `rivet-linux-x64`, and `rivet-windows-x64.exe`. On macOS or Linux, rename the downloaded file to `rivet`. On Windows, keep the `.exe` extension.
 
-Copy `rivet.example.toml` to `rivet.toml`. Set `filesystem.allowed_roots` to an existing absolute directory and configure the commands Rivet may run. Validate the file, check the environment, then start the server:
+Copy the example file to `rivet.toml`. Set `filesystem.allowed_roots` to an existing absolute directory. The example uses `[]`, which Rivet rejects until you add a root.
 
 ```sh
 cp rivet.example.toml rivet.toml
-# Edit rivet.toml for your machine
+```
+
+Edit `rivet.toml`, then run these commands from its directory:
+
+```sh
 chmod +x ./rivet
 ./rivet config-check
 ./rivet doctor
 ./rivet serve
 ```
 
-On Windows PowerShell, copy the configuration with `Copy-Item rivet.example.toml rivet.toml`, edit it, then run:
+On Windows PowerShell, copy the configuration, edit `rivet.toml`, then run:
 
 ```powershell
+Copy-Item rivet.example.toml rivet.toml
+notepad rivet.toml
 .\rivet.exe config-check
 .\rivet.exe doctor
 .\rivet.exe serve
@@ -40,15 +46,16 @@ On Windows PowerShell, copy the configuration with `Copy-Item rivet.example.toml
 If you built from source, use `target/release/rivet` (or `target\release\rivet.exe` on Windows). Rivet reads `./rivet.toml` by default. Pass `--config PATH` to select another file. Repeat `--root PATH` to replace the configured roots for a session:
 
 ```sh
-rivet serve --config /path/to/rivet.toml --root /path/to/project
+./rivet serve --config /path/to/rivet.toml --root /path/to/project
 ```
 
-Configure your MCP client to launch `rivet serve` as a stdio process. Keep `rivet.toml` private: it contains local paths and command permissions.
+Follow [MCP client setup](docs/mcp-setup.md) to register Rivet in Codex, ChatGPT Desktop, or ChatGPT Web. The guide also explains the tunnel required by ChatGPT Web. Keep `rivet.toml` private because it contains local paths and the command allowlist.
 
 ## Documentation
 
 - [Configuration reference](docs/configuration.md)
 - [MCP tools reference](docs/tools.md)
+- [MCP client setup](docs/mcp-setup.md)
 - [Security model](docs/security.md)
 - [Build, CI, and profiling](docs/development.md)
 - [Release measurements](docs/measurements.md)

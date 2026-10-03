@@ -1,6 +1,6 @@
 # Release measurements
 
-Measurements below were collected on 2026-10-02 from a macOS arm64 host (Apple M2, macOS 27.0, Rust 1.98.1). They describe one machine and are not performance guarantees for other systems.
+Measurements below were collected on 2026-10-02 on an Apple M2 MacBook Air, macOS 27.0, Rust 1.98.1. They apply to this host and these build settings.
 
 | Measure | Release build | Profiling build |
 | --- | ---: | ---: |

@@ -9,7 +9,7 @@ Rivet reads TOML from `./rivet.toml` unless `--config PATH` is supplied. Unknown
 allowed_roots = ["/absolute/path/to/project"]
 ```
 
-Roots must exist and be absolute. At least one root is required. On Windows, TOML literal strings are convenient for paths, for example `allowed_roots = ['C:\Users\you\project']`. `--root PATH` may be repeated; when present, command-line roots replace the configured list for that run. Relative command-line roots resolve from the launch directory.
+Roots must exist and be absolute. At least one root is required. On Windows, write paths as TOML literal strings, for example `allowed_roots = ['C:\Users\you\project']`. Repeat `--root PATH` to replace the configured list for that run. Relative command-line roots resolve from the launch directory.
 
 Rivet confines its file operations and command working directories to these roots. See the [security model](security.md) for the limits of this boundary.
 
@@ -52,7 +52,7 @@ executable = "cargo"
 allow_any_args = true
 ```
 
-`executable` is resolved from `PATH` at startup, or treated as a path if it contains a slash. With `allow_any_args = true`, all arguments are accepted subject to the path checks described in the [security model](security.md). Otherwise, `allowed_subcommands` must be nonempty and the first argument must match one of its entries exactly. Rivet passes arguments directly to the executable; it does not invoke a shell implicitly.
+`executable` is resolved from `PATH` at startup. A value containing a platform path separator is treated as a path. With `allow_any_args = true`, arguments are accepted subject to the path checks described in the [security model](security.md). Otherwise, `allowed_subcommands` must be nonempty and the first argument must match one of its entries exactly. Rivet passes arguments directly to the executable; it does not invoke a shell implicitly.
 
 Commands are resolved when Rivet starts. Restart the server after changing the command registry or environment configuration.
 
