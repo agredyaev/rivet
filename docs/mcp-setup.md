@@ -20,7 +20,7 @@ ChatGPT cannot launch a local stdio process. Connect it through [OpenAI Secure M
    & ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/agredyaev/rivet/main/install-session.ps1')))
    ```
 
-   These scoped scripts use the current directory as the workspace. They pass `git` with `status`, `diff`, `log`, `show`, `add`, and `commit`, plus `cargo`, `uv`, and `make` with any arguments. The program list is built in loops in the script. Review it before running in an unfamiliar workspace. Use `install.sh` or `install.ps1` directly to choose a different scope. The installer detects the platform, downloads the latest release ZIP, verifies its SHA-256 checksum, and installs it under the user's local application data directory.
+   These scoped scripts display the current directory and each command they add, then pass that scope to the installer in loops. They allow `git` with `status`, `diff`, `log`, `show`, `add`, and `commit`, plus `cargo`, `uv`, and `make` with any arguments. Review the displayed scope before running in an unfamiliar workspace. Use `install.sh` or `install.ps1` directly to choose a different scope. The installer detects the platform, downloads the latest release ZIP, verifies its SHA-256 checksum, and installs it under the user's local application data directory.
 
    The launcher checks the latest stable release in the official [OpenAI tunnel-client repository](https://github.com/openai/tunnel-client/releases), downloads the matching platform archive if needed, verifies the SHA-256 from that same release, and installs `tunnel-client` with its bundled `cloudflared`. If GitHub is unavailable, an installed client is reused; the first install requires internet access.
 

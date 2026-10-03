@@ -18,7 +18,14 @@ chmod +x "$fake_bin/curl"
 expected_root="$(cd -- "$workspace" && pwd -P)"
 export PATH="$fake_bin:$PATH"
 export RIVET_SETUP_ARGS_FILE="$fixture/received-args.txt"
-(cd "$workspace" && bash "$repo_dir/install-session.sh")
+setup_output="$(cd "$workspace" && bash "$repo_dir/install-session.sh")"
+printf '%s\n' "$setup_output"
+[[ "$setup_output" == *"Workspace: $expected_root"* ]]
+[[ "$setup_output" == *'Commands added for this session:'* ]]
+for expected in 'git status' 'git diff' 'git log' 'git show' 'git add' 'git commit' \
+  'cargo (any arguments)' 'uv (any arguments)' 'make (any arguments)'; do
+  [[ "$setup_output" == *"✓ $expected"* ]]
+done
 printf '%s\n' \
   --root "$expected_root" \
   --allow-command git=git \

@@ -16,7 +16,7 @@ Rivet implements an [MCP](https://modelcontextprotocol.io/) server over stdio. I
 
 ## Install and run
 
-Run one command from the workspace Rivet should access. This scoped setup allows Git status, diff, log, show, add, and commit, plus `cargo`, `uv`, and `make` with any arguments. The workspace is the current directory. It downloads the latest verified release, installs it, asks for the tunnel ID and runtime API key, then starts a tunnel session:
+Run one command from the workspace Rivet should access. Before setup, it displays the current workspace and the commands added for this session: Git status, diff, log, show, add, and commit, plus `cargo`, `uv`, and `make` with any arguments. It downloads the latest verified release, installs it, asks for the tunnel ID and runtime API key, then starts a tunnel session:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/agredyaev/rivet/main/install-session.sh | bash
