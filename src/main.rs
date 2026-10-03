@@ -8,6 +8,7 @@ mod filesystem;
 mod mcp;
 mod process;
 mod session;
+mod tunnel;
 
 use std::{collections::BTreeMap, env, path::PathBuf, process::ExitCode, sync::Arc};
 
@@ -37,6 +38,34 @@ async fn main() -> ExitCode {
         );
         return ExitCode::FAILURE;
     };
+    if action == "session-mcp" {
+        let executable = match env::current_exe() {
+            Ok(path) => path,
+            Err(error) => {
+                eprintln!("Cannot locate Rivet executable: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let status = match std::process::Command::new(executable)
+            .arg("serve")
+            .args(args)
+            .env_remove("CONTROL_PLANE_API_KEY")
+            .env_remove("OPENAI_API_KEY")
+            .env_remove("OPENAI_ADMIN_KEY")
+            .status()
+        {
+            Ok(status) => status,
+            Err(error) => {
+                eprintln!("Could not start Rivet MCP server: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
+        return if status.success() {
+            ExitCode::SUCCESS
+        } else {
+            ExitCode::FAILURE
+        };
+    }
     if action == "session" {
         return session::run(args.collect());
     }
