@@ -9,6 +9,12 @@ import threading
 import time
 from pathlib import Path
 
+CARGO_VERSION = next(
+    line.split('"')[1]
+    for line in (Path(__file__).parent.parent / "Cargo.toml").read_text().splitlines()
+    if line.startswith('version = "')
+)
+
 
 def main():
     binary = Path(sys.argv[1]).resolve()
@@ -29,9 +35,7 @@ elif mode == "tree":
     time.sleep(30)
 ''')
         config = root / "rivet.toml"
-        config.write_text(f'''[filesystem]
-allowed_roots = [{json.dumps(directory)}]
-[limits]
+        config.write_text('''[limits]
 max_stdout_bytes = 2048
 max_stderr_bytes = 2048
 max_file_read_bytes = 4096
@@ -42,11 +46,9 @@ max_timeout_ms = 30000
 [environment]
 pass = ["PATH", "SystemRoot", "WINDIR"]
 allow_override = []
-[commands.python]
-executable = {json.dumps(sys.executable)}
-allow_any_args = true
 ''')
-        proc = subprocess.Popen([binary, "serve", "--config", config], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        scope = ["--root", directory, "--allow-command", f"python={sys.executable}", "--allow-any-args", "python"]
+        proc = subprocess.Popen([binary, "serve", "--config", config, *scope], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         replies = queue.Queue()
         def reader():
             for line in proc.stdout:
@@ -83,7 +85,7 @@ allow_any_args = true
             assert info["serverInfo"] == {
                 "name": "rivet",
                 "title": "Rivet",
-                "version": "0.1.0",
+                "version": CARGO_VERSION,
                 "description": "Local MCP server for configured commands and allowed filesystem roots.",
                 "websiteUrl": "https://github.com/agredyaev/rivet",
             }, info

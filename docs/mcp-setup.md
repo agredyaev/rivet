@@ -1,29 +1,49 @@
 # Connect Rivet to ChatGPT
 
-Rivet uses MCP stdio. ChatGPT connects to remote MCP servers; to reach this local server, use OpenAI Secure MCP Tunnel. Before connecting, install Rivet and `rivet.toml`, then run `rivet config-check` and `rivet doctor` successfully.
+Rivet uses MCP stdio. ChatGPT connects to remote MCP servers; to reach this local server, use OpenAI Secure MCP Tunnel. The one-command installer downloads and verifies the latest Rivet release, installs it, asks for this session's scope and credentials, then starts the tunnel.
 
 ## ChatGPT
 
 ChatGPT cannot launch a local stdio process. Connect it through [OpenAI Secure MCP Tunnel](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels). Rivet exposes command execution and file writes, so the ChatGPT plan and workspace must allow full MCP tool access. The [ChatGPT MCP help page](https://help.openai.com/en/articles/12584461-developer-mode-and-mcp-apps-in-chatgpt) lists current availability.
 
-1. Create a tunnel in [OpenAI Platform tunnel settings](https://platform.openai.com/settings/organization/tunnels). Associate it with the target ChatGPT workspace. Creating a tunnel requires Tunnels Read + Manage; using it requires Tunnels Read + Use.
-2. Create a runtime API key in [OpenAI Platform API key settings](https://platform.openai.com/settings/organization/api-keys). Do not put the key in `rivet.toml`, a profile file, or shell history.
-3. Install the current platform archive from [OpenAI's tunnel-client releases](https://github.com/openai/tunnel-client/releases). Keep `tunnel-client` and the bundled `cloudflared` executable together in `bin/`.
-4. From the workspace root, run the script for your shell. The default layout is `bin/` for the executables, `rivet.toml` for config, and `rivet/scripts/` for these scripts. Set `RIVET_PROJECT_DIR` if your layout differs. Each script prompts for the tunnel ID and reads the runtime key without displaying it. The generated profile stores only the `env:CONTROL_PLANE_API_KEY` reference. A small launcher removes the key from its environment before starting Rivet. The script validates Rivet, runs tunnel-client `doctor`, then starts the tunnel in the foreground:
+1. From the workspace directory, run the one-command installer and pass the scope for this session:
 
-   Bash on macOS or Linux:
+   macOS or Linux:
 
    ```sh
-   ./rivet/scripts/start-tunnel.sh
+   curl -fsSL https://raw.githubusercontent.com/agredyaev/rivet/main/install.sh | bash -s -- --root "$PWD" --allow-command git=git --allow-subcommand git=status --allow-subcommand git=diff
    ```
 
-   PowerShell on Windows:
+   Windows PowerShell:
 
    ```powershell
-   .\rivet\scripts\start-tunnel.ps1
+   & ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/agredyaev/rivet/main/install.ps1'))) -Root (Get-Location).Path -AllowCommand 'git=git' -AllowSubcommand 'git=status','git=diff'
    ```
 
-   Keep that process running. In ChatGPT, open **Settings → Apps → Create**. If app creation or Developer mode is unavailable, ask the workspace admin to enable it. Enter the app name and description, choose **Tunnel**, select the tunnel ID, then select **Scan Tools** and **Create**. Enable the app in a chat and call `list_roots` to verify the connection.
+   The installer detects the platform, downloads the latest release ZIP, verifies its SHA-256 checksum, and installs it under the user's local application data directory. Omit `--root` or `-Root` to choose the workspace interactively. Omit command flags to leave command and process execution disabled.
+
+   The launcher checks the latest stable release in the official [OpenAI tunnel-client repository](https://github.com/openai/tunnel-client/releases), downloads the matching platform archive if needed, verifies the SHA-256 from that same release, and installs `tunnel-client` with its bundled `cloudflared`. If GitHub is unavailable, an installed client is reused; the first install requires internet access.
+
+   The launcher asks for the OpenAI tunnel ID and runtime API key. Create them in [Platform Tunnels](https://platform.openai.com/settings/organization/tunnels) and [Runtime API keys](https://platform.openai.com/settings/organization/api-keys); the links are printed by the launcher. Creating a tunnel requires Tunnels Read + Manage; using it requires Tunnels Read + Use. Both values are entered with hidden input. The runtime key is not saved. The selected roots and allowed programs apply only to this server process. Keep the terminal open while connected.
+
+   In ChatGPT, open **Settings → Apps → Create**. If app creation or Developer mode is unavailable, ask the workspace admin to enable it. Enter the app name and description, choose **Tunnel**, select the tunnel ID, then select **Scan Tools** and **Create**. Enable the app in a chat and call `list_roots` to verify the connection.
+
+## What the launch scripts do
+
+The release package contains `bin/rivet`, `rivet.toml`, and the setup scripts under `rivet/scripts/`. The TOML file stores resource limits and environment policy. The launcher passes roots and allowed programs to Rivet as startup arguments; it does not store the session scope in TOML.
+
+In order, each script:
+
+1. Checks the session roots, allowed programs, and TOML with `rivet config-check` and `rivet doctor`.
+2. Checks GitHub for the latest stable tunnel-client version. If it is newer than the installed version, downloads and checksum-verifies the matching full client archive. The archive contains both `tunnel-client` and `cloudflared`.
+3. Prompts for the OpenAI tunnel ID, validates it, and creates a temporary profile with the MCP launcher and this session's scope.
+4. Prompts for the runtime API key with hidden input, runs `tunnel-client doctor`, then starts `tunnel-client run` in the foreground. The terminal stays occupied until the process exits; press Ctrl+C to stop it. The temporary profile is removed when the session ends.
+
+When tunnel-client starts Rivet, it invokes `serve-rivet-mcp.sh` on macOS/Linux or `serve-rivet-mcp.ps1` on Windows with the selected `--root` and command allowlist arguments. These launchers clear `CONTROL_PLANE_API_KEY`, `OPENAI_API_KEY`, and `OPENAI_ADMIN_KEY` from the child process environment before executing Rivet. The API key is not written to the profile or passed on a command line; it is held in the tunnel-client process environment while the tunnel runs.
+
+The launcher does not create a tunnel or API key in OpenAI Platform, change the ChatGPT workspace, or register Codex. It prints the Platform links, then accepts the tunnel ID and runtime key. The API key is requested each time. The tunnel profile is recreated with the current scope for each launch and removed when the session ends. Do not paste the API key into a command, config file, or profile.
+
+If no `--allow-command` flags are supplied, the command list is empty and command/process launch requests return `COMMAND_NOT_FOUND`. Rivet starts allowed executables directly without a shell or interactive terminal. See [session scope arguments](configuration.md#allowed-programs).
 
 ### App metadata
 
@@ -35,9 +55,9 @@ The tunnel process must remain connected. If Rivet or the host stops, ChatGPT ca
 
 ## Common connection errors
 
-- **MCP client reports startup failure:** run `rivet config-check --config /absolute/path/rivet.toml` and `rivet doctor --config /absolute/path/rivet.toml`. Fix the reported error, then restart the MCP client. `rivet serve` waits for requests on stdin; run it through the client after validation.
-- **`CONFIG_ERROR`:** read the error printed to stderr. Set `allowed_roots` to an existing absolute directory, remove unknown TOML fields, and make sure every configured executable exists.
-- **`COMMAND_NOT_FOUND`:** the requested command name is absent from `[commands.*]`. Add it to `rivet.toml`, then restart Rivet.
-- **Executable missing at startup:** run `rivet config-check --config /absolute/path/rivet.toml`. Fix the reported path, or set `[commands.NAME].executable` to the executable's absolute path.
+- **MCP client reports startup failure:** run `rivet config-check --config /absolute/path/rivet.toml --root /absolute/workspace` and `rivet doctor --config /absolute/path/rivet.toml --root /absolute/workspace`. Fix the reported error, then restart the MCP client. `rivet serve` waits for requests on stdin; run it through the client after validation.
+- **`CONFIG_ERROR`:** read the error printed to stderr. Check each `--root` path exists and each `--allow-command NAME=EXECUTABLE` resolves to an executable.
+- **`COMMAND_NOT_FOUND`:** the requested command name is absent from the session's `--allow-command` arguments. Restart with that program explicitly allowed.
+- **Executable missing at startup:** run `rivet config-check` with the same roots and allowlist arguments. Fix the executable name or pass an absolute executable path.
 - **`PATH_DENIED`:** set `cwd` or the file path to an absolute path under one of the effective roots. In MCP, call `list_roots` to see those roots.
 - **ChatGPT cannot see the tunnel:** confirm the tunnel is associated with the ChatGPT workspace and that the user has Tunnels Read + Use permission.

@@ -2,16 +2,15 @@
 
 Rivet reads TOML from `./rivet.toml` unless `--config PATH` is supplied. Unknown fields are rejected. Start with [`rivet.example.toml`](../rivet.example.toml).
 
-## Filesystem roots
+## Session scope
 
-```toml
-[filesystem]
-allowed_roots = ["/absolute/path/to/project"]
+Pass each permitted filesystem root on the command line. Roots must exist; relative paths resolve from the launch directory.
+
+```sh
+rivet serve --config ./rivet.toml --root /path/to/project
 ```
 
-Roots must exist and be absolute. At least one root is required. On Windows, write paths as TOML literal strings, for example `allowed_roots = ['C:\Users\you\project']`. Repeat `--root PATH` to replace the configured list for that run. Relative command-line roots resolve from the launch directory.
-
-Rivet confines its file operations and command working directories to these roots. See the [security model](security.md) for the limits of this boundary.
+Repeat `--root PATH` to allow more than one root. The same roots must be supplied to `config-check`, `doctor`, and `commands`. Rivet confines its file operations and command working directories to these roots. See the [security model](security.md) for the limits of this boundary.
 
 ## Resource limits
 
@@ -38,30 +37,29 @@ allow_override = ["RUST_LOG"]
 
 Child processes start with an empty environment. Rivet copies only variables named in `pass` from its own environment. An MCP request may override only names listed in `allow_override`. Variable names cannot be empty or contain `=` or NUL.
 
-## Command registry
+## Allowed programs
 
-Each command needs one argument authorization mode:
+Pass permitted programs at server startup. The command name used by MCP requests is the name before `=`. Restricted commands need one or more allowed first arguments:
 
-```toml
-[commands.git]
-executable = "git"
-allowed_subcommands = ["status", "diff", "log", "show"]
-
-[commands.cargo]
-executable = "cargo"
-allow_any_args = true
+```sh
+rivet serve --config ./rivet.toml \
+  --root /path/to/project \
+  --allow-command git=git \
+  --allow-subcommand git=status \
+  --allow-subcommand git=diff
 ```
 
-`executable` is resolved from `PATH` at startup. A value containing a platform path separator is treated as a path. With `allow_any_args = true`, arguments are accepted subject to the path checks described in the [security model](security.md). Otherwise, `allowed_subcommands` must be nonempty and the first argument must match one of its entries exactly. Rivet passes arguments directly to the executable; it does not invoke a shell implicitly.
+Repeat `--allow-command NAME=EXECUTABLE` for each program and `--allow-subcommand NAME=VALUE` for each permitted first argument. `EXECUTABLE` is resolved from `PATH`; a value containing a path separator is treated as a path. `--allow-any-args NAME` explicitly permits any arguments for that command, subject to path checks. Avoid it for shells and interpreters.
 
-Commands are resolved when Rivet starts. Restart the server after changing the command registry or environment configuration.
+Rivet passes arguments directly to the executable; it does not invoke a shell or interactive terminal. The launcher passes this scope to the server for the current tunnel session. Restart with different flags to change it.
 
 ## Validate and diagnose
 
 ```sh
-rivet config-check
-rivet doctor
-rivet commands
+rivet config-check --config ./rivet.toml --root /path/to/project
+rivet doctor --config ./rivet.toml --root /path/to/project
+rivet commands --config ./rivet.toml --root /path/to/project \
+  --allow-command git=git --allow-subcommand git=status
 ```
 
-`config-check` validates and loads the configuration. `doctor` also checks root access and configured executables. `commands` prints the resolved command paths.
+`config-check` validates and loads the configuration. `doctor` also checks root access and allowed executables. `commands` prints the resolved command paths and argument policy.

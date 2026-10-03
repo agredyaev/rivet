@@ -1,4 +1,5 @@
 /target/
 /rivet.toml
+/tunnel-client-profiles/
 .DS_Store
 /tunnel-client-runtime-*.zip
