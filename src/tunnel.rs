@@ -228,6 +228,22 @@ fn install_client(bin: &Path) -> Result<PathBuf, String> {
     Ok(client)
 }
 
+fn input(prompt: &str) -> Result<String, String> {
+    print!("  {prompt}");
+    io::stdout().flush().map_err(|e| e.to_string())?;
+    let mut value = String::new();
+    io::stdin()
+        .read_line(&mut value)
+        .map_err(|error| format!("Could not read terminal input: {error}"))?;
+    Ok(value.trim().to_owned())
+}
+
+fn valid_tunnel_id(value: &str) -> bool {
+    value.starts_with("tunnel_")
+        && value.len() == 39
+        && value[7..].bytes().all(|byte| byte.is_ascii_hexdigit())
+}
+
 fn secret(prompt: &str) -> Result<String, String> {
     print!("  {prompt}");
     io::stdout().flush().map_err(|e| e.to_string())?;
@@ -288,13 +304,11 @@ pub fn run(root: &Path, rivet: &Path, config: &Path, args: &[String]) -> ExitCod
         }
         let tunnel = install_client(&root.join("bin"))?;
         println!("\n  OpenAI tunnel: https://platform.openai.com/settings/organization/tunnels");
-        let tunnel_id = secret("Tunnel ID (input hidden): ")?;
-        if !tunnel_id.starts_with("tunnel_")
-            || tunnel_id.len() != 39
-            || !tunnel_id[7..].bytes().all(|b| b.is_ascii_hexdigit())
-        {
+        let tunnel_id = input("Tunnel ID: ")?;
+        if !valid_tunnel_id(&tunnel_id) {
             return Err("Expected tunnel_ followed by 32 hexadecimal characters".into());
         }
+        println!("  ✓ Tunnel ID accepted.");
 
         let profile_dir = root.join("tunnel-client-profiles");
         fs::create_dir_all(&profile_dir).map_err(|e| e.to_string())?;
@@ -369,6 +383,14 @@ pub fn run(root: &Path, rivet: &Path, config: &Path, args: &[String]) -> ExitCod
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn validates_tunnel_id_format() {
+        assert!(valid_tunnel_id("tunnel_0123456789abcdef0123456789abcdef"));
+        assert!(!valid_tunnel_id("tunnel_0123456789abcdef"));
+        assert!(!valid_tunnel_id("tunnel_0123456789abcdef0123456789abcdeg"));
+        assert!(!valid_tunnel_id("other__0123456789abcdef0123456789abcdef"));
+    }
 
     #[test]
     fn selects_full_client_for_detected_target() {
