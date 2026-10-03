@@ -12,9 +12,8 @@ Set-StrictMode -Version Latest
 
 $repo = 'agredyaev/rivet'
 $installRoot = if ($env:RIVET_INSTALL_ROOT) { $env:RIVET_INSTALL_ROOT } else { Join-Path $env:LOCALAPPDATA 'Rivet' }
-$previousUiState = $env:RIVET_UI_STARTED
 if ($Help) {
-    Write-Host "Usage: invoke install.ps1 with optional -Root PATH -AllowCommand NAME=EXECUTABLE -AllowSubcommand NAME=VALUE"
+    Write-Host "Usage: download scripts/install.ps1 and invoke it with optional -Root PATH -AllowCommand NAME=EXECUTABLE -AllowSubcommand NAME=VALUE"
     Write-Host "Downloads the latest verified Rivet release, installs it under $installRoot, and starts one tunnel session."
     exit 0
 }
@@ -22,7 +21,9 @@ if (-not $env:LOCALAPPDATA) { throw 'LOCALAPPDATA is not set.' }
 
 Write-Host ''
 Write-Host 'Rivet setup' -ForegroundColor Cyan
-Write-Host '  Detecting Windows x64 release...' -ForegroundColor Yellow
+$architecture = [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+if ($architecture -ne 'X64') { throw "Rivet releases currently support Windows x64 only; detected $architecture." }
+Write-Host '  Detected Windows x64' -ForegroundColor Yellow
 $releaseUri = "https://api.github.com/repos/$repo/releases/latest"
 $headers = @{ 'User-Agent' = 'Rivet Installer' }
 $release = Invoke-RestMethod -Uri $releaseUri -Headers $headers
@@ -47,19 +48,21 @@ try {
     $versionDir = Join-Path $installRoot ($tag + '-' + $actual.Substring(0, 12))
     New-Item -ItemType Directory -Force -Path $versionDir | Out-Null
     Expand-Archive -LiteralPath $zip -DestinationPath $versionDir -Force
-    $launcher = Join-Path $versionDir 'start-rivet.ps1'
-    if (-not (Test-Path -LiteralPath (Join-Path $versionDir 'bin\rivet.exe') -PathType Leaf) -or
-        -not (Test-Path -LiteralPath $launcher -PathType Leaf)) {
-        throw 'Release archive is missing the Rivet launcher or binary.'
+    $rivet = Join-Path $versionDir 'bin\rivet.exe'
+    if (-not (Test-Path -LiteralPath $rivet -PathType Leaf) -or
+        -not (Test-Path -LiteralPath (Join-Path $versionDir 'rivet.toml') -PathType Leaf)) {
+        throw 'Release archive is missing the Rivet binary or configuration.'
     }
     Write-Host "  ✓ Installed in $versionDir" -ForegroundColor Green
     Write-Host '  Starting Rivet with the scope for this session...' -ForegroundColor Yellow
-    $env:RIVET_UI_STARTED = '1'
-    & $launcher -Root $Root -AllowCommand $AllowCommand -AllowSubcommand $AllowSubcommand -AllowAnyArgs $AllowAnyArgs
+    $rivetArgs = @('session')
+    foreach ($rootPath in $Root) { $rivetArgs += @('--root', $rootPath) }
+    foreach ($value in $AllowCommand) { $rivetArgs += @('--allow-command', $value) }
+    foreach ($value in $AllowSubcommand) { $rivetArgs += @('--allow-subcommand', $value) }
+    foreach ($value in $AllowAnyArgs) { $rivetArgs += @('--allow-any-args', $value) }
+    & $rivet @rivetArgs
     if ($LASTEXITCODE -and $LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 }
 finally {
-    if ($null -eq $previousUiState) { Remove-Item Env:RIVET_UI_STARTED -ErrorAction SilentlyContinue }
-    else { $env:RIVET_UI_STARTED = $previousUiState }
     Remove-Item -LiteralPath $tempDir -Recurse -Force -ErrorAction SilentlyContinue
 }

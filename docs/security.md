@@ -24,5 +24,5 @@ Rivet communicates over stdin/stdout and does not listen on a network port. A tu
 1. Pass only the roots needed for the current session with `--root`.
 2. Pass each allowed executable and permitted first argument with `--allow-command` and `--allow-subcommand`.
 3. Do not register shells or interpreters with unrestricted arguments unless that is intentional.
-4. The tunnel launcher keeps this scope in the temporary local tunnel profile and removes the profile when the session ends.
+4. Rivet keeps this scope in the temporary local tunnel profile and removes the profile when the session ends.
 5. Child commands run with the Rivet user's OS permissions.

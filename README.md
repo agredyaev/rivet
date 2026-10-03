@@ -30,7 +30,7 @@ Windows PowerShell:
 
 The platform installers download the latest verified release and forward the workspace to Rivet. Rivet offers `uv`, `mkdir`, `rg`, and `make` with any arguments; `git` is limited to `status`, `diff`, `log`, `show`, `add`, `commit`, `rev-parse`, and `ls-files`; `cargo` is limited to `check`, `test`, `fmt`, `clippy`, and `metadata`. Enter multiple menu numbers separated by commas to select multiple built-ins. Select **Add a custom command** to add one or more commands, each with chosen first arguments or any arguments. Review the displayed scope before continuing. The installers detect the platform, verify the release ZIP with SHA-256, and install under `~/.local/share/rivet/<release>-<checksum>` or `%LOCALAPPDATA%\Rivet\<release>-<checksum>`. The scope applies only to the current session.
 
-The installer downloads the latest stable `tunnel-client` and bundled `cloudflared` from the official OpenAI GitHub release and verifies its SHA-256 checksum. Create the tunnel and runtime API key in OpenAI Platform using the links shown by the launcher. The runtime key is requested each time, entered with hidden input, and not saved. The temporary tunnel profile is removed when the session ends.
+During setup, Rivet downloads the latest stable `tunnel-client` and bundled `cloudflared` from the official OpenAI GitHub release and verifies its SHA-256 checksum. Create the tunnel and runtime API key in OpenAI Platform using the links shown by Rivet. The runtime key is requested each time, entered with hidden input, and not saved. The temporary tunnel profile is removed when the session ends.
 
 Manual downloads are available from [GitHub Releases](https://github.com/agredyaev/rivet/releases/latest). Extract a package and start an interactive session directly with the binary:
 
@@ -51,9 +51,9 @@ The `session` command asks Rivet to collect the workspace and command scope for 
   --allow-subcommand git=diff
 ```
 
-It downloads the latest stable `tunnel-client` and bundled `cloudflared` from the official OpenAI GitHub release, verifies the SHA-256 checksum, asks for the tunnel ID and runtime API key with hidden input, then starts the tunnel with this scope. Create the tunnel and runtime key in OpenAI Platform using the links shown by the launcher. Keep the terminal open while you use Rivet through ChatGPT. The runtime key is requested each time and is not saved. The tunnel profile is temporary and removed when the session ends.
+Rivet downloads the latest stable `tunnel-client` and bundled `cloudflared` from the official OpenAI GitHub release, verifies the SHA-256 checksum, asks for the tunnel ID and runtime API key with hidden input, then starts the tunnel with this scope. Create the tunnel and runtime key in OpenAI Platform using the links shown by Rivet. Keep the terminal open while you use Rivet through ChatGPT. The runtime key is requested each time and is not saved. The tunnel profile is temporary and removed when the session ends.
 
-The package launcher is for a remote tunnel. If your MCP host starts Rivet directly over stdio, use `bin/rivet` from the package (or `target/release/rivet` from a source build) and supply an existing workspace root:
+`rivet session` starts a remote tunnel. If your MCP host starts Rivet directly over stdio, use `bin/rivet` from the package (or `target/release/rivet` from a source build) and supply an existing workspace root:
 
 ```sh
 ./bin/rivet serve --config ./rivet.toml --root /path/to/project \

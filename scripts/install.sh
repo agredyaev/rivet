@@ -19,7 +19,7 @@ rivet_error() { printf '  %b✗%b %s\n' "$red" "$reset" "$1" >&2; }
 rivet_header
 
 if [[ "${1:-}" == '--help' || "${1:-}" == '-h' ]]; then
-  printf 'Usage: curl -fsSL https://raw.githubusercontent.com/%s/main/install.sh | bash -s -- [--root PATH] [--allow-command NAME=EXECUTABLE] [--allow-subcommand NAME=VALUE] [--allow-any-args NAME]\n' "$repo"
+  printf 'Usage: curl -fsSL https://raw.githubusercontent.com/%s/main/scripts/install.sh | bash -s -- [--root PATH] [--allow-command NAME=EXECUTABLE] [--allow-subcommand NAME=VALUE] [--allow-any-args NAME]\n' "$repo"
   printf 'Downloads the latest verified Rivet release, installs it under %s, and starts one tunnel session.\n' "$install_root"
   exit 0
 fi
@@ -47,6 +47,10 @@ case "$(uname -m)" in
     ;;
   *) printf 'Unsupported CPU architecture: %s\n' "$(uname -m)" >&2; exit 1 ;;
 esac
+if [[ "$os" == 'darwin' && "$arch" != 'arm64' ]]; then
+  printf 'Rivet releases currently support macOS arm64 only.\n' >&2
+  exit 1
+fi
 asset="rivet-$os-$arch.zip"
 
 rivet_note 'Finding the latest Rivet release...'
@@ -84,13 +88,12 @@ rivet_ok 'Release archive checksum verified'
 version_dir="$install_root/$tag-${actual:0:12}"
 mkdir -p "$version_dir"
 unzip -oq "$tmp_dir/$asset" -d "$version_dir"
-if [[ ! -x "$version_dir/bin/rivet" || ! -x "$version_dir/start-rivet.sh" ]]; then
-  rivet_error 'Release archive is missing the Rivet launcher or binary.'
+if [[ ! -x "$version_dir/bin/rivet" || ! -f "$version_dir/rivet.toml" ]]; then
+  rivet_error 'Release archive is missing the Rivet binary or configuration.'
   exit 1
 fi
 rivet_ok "Installed in $version_dir"
 rivet_note 'Starting Rivet with the scope for this session...'
 rm -rf "$tmp_dir"
 trap - EXIT
-export RIVET_UI_STARTED=1
-exec "$version_dir/start-rivet.sh" "$@" < /dev/tty
+exec "$version_dir/bin/rivet" session "$@" < /dev/tty

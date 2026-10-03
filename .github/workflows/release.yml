@@ -54,23 +54,14 @@ jobs:
         run: |
           set -euo pipefail
           package_dir=dist/package
-          mkdir -p "$package_dir/bin" "$package_dir/rivet"
+          mkdir -p "$package_dir/bin"
           cp "target/${{ matrix.target }}/release/${{ matrix.binary }}" "$package_dir/bin/${{ matrix.binary }}"
           cp rivet.example.toml "$package_dir/rivet.toml"
-          cp install.sh install.ps1 start-rivet.sh start-rivet.ps1 "$package_dir/"
-          cp -R scripts "$package_dir/rivet/"
-          chmod +x "$package_dir/start-rivet.sh" "$package_dir/bin/${{ matrix.binary }}" "$package_dir/rivet/scripts/"*.sh
+          chmod +x "$package_dir/bin/${{ matrix.binary }}"
           (cd "$package_dir" && zip -qr "../${{ matrix.asset }}" .)
           entries=$(unzip -Z1 "dist/${{ matrix.asset }}")
           printf '%s\n' "$entries" | grep -Fxq 'rivet.toml'
-          printf '%s\n' "$entries" | grep -Fxq 'install.sh'
-          printf '%s\n' "$entries" | grep -Fxq 'install.ps1'
-          printf '%s\n' "$entries" | grep -Fxq 'start-rivet.sh'
-          printf '%s\n' "$entries" | grep -Fxq 'start-rivet.ps1'
-          printf '%s\n' "$entries" | grep -Fxq 'rivet/scripts/sync-tunnel-client.sh'
-          printf '%s\n' "$entries" | grep -Fxq 'rivet/scripts/sync-tunnel-client.ps1'
-          printf '%s\n' "$entries" | grep -Fxq 'rivet/scripts/ui.sh'
-          printf '%s\n' "$entries" | grep -Fxq 'rivet/scripts/ui.ps1'
+          ! printf '%s\n' "$entries" | grep -Eq '(^|/)(scripts/|install\.sh$|install\.ps1$)'
           printf '%s\n' "$entries" | grep -Fxq 'bin/${{ matrix.binary }}'
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
