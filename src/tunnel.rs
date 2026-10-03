@@ -392,9 +392,7 @@ pub fn run(root: &Path, rivet: &Path, config: &Path, args: &[String]) -> ExitCod
             .env("CONTROL_PLANE_API_KEY", &key)
             .spawn()
             .map_err(|error| format!("Could not start tunnel-client: {error}"))?;
-        println!(
-            "\n  ✓ tunnel-client started. Keep this terminal open; press Ctrl+C to stop it."
-        );
+        println!("\n  ✓ tunnel-client started. Keep this terminal open; press Ctrl+C to stop it.");
         let status = tunnel_process
             .wait()
             .map_err(|error| format!("Could not wait for tunnel-client: {error}"))?;
