@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.2.7](https://github.com/agredyaev/rivet/compare/v0.2.6...v0.2.7) (2026-10-03)
+
+
+### Refactoring
+
+* simplify session setup and release publishing ([ffcf66c](https://github.com/agredyaev/rivet/commit/ffcf66c9000e3a0763e55b48bce2bc086b404fd8))
+
 ## [0.2.6](https://github.com/agredyaev/rivet/compare/v0.2.5...v0.2.6) (2026-10-03)
 
 
