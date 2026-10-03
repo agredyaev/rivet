@@ -11,16 +11,16 @@ ChatGPT cannot launch a local stdio process. Connect it through [OpenAI Secure M
    macOS or Linux:
 
    ```sh
-   curl -fsSL https://raw.githubusercontent.com/agredyaev/rivet/main/install-session.sh | bash
+   curl -fsSL https://raw.githubusercontent.com/agredyaev/rivet/main/install.sh | bash -s -- --root "$PWD"
    ```
 
    Windows PowerShell:
 
    ```powershell
-   & ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/agredyaev/rivet/main/install-session.ps1')))
+   & ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/agredyaev/rivet/main/install.ps1'))) -Root (Get-Location).Path
    ```
 
-   These scoped scripts display the current directory and each command they add, then pass that scope to the installer in loops. They allow `git` with `status`, `diff`, `log`, `show`, `add`, and `commit`, plus `cargo`, `uv`, and `make` with any arguments. Review the displayed scope before running in an unfamiliar workspace. Use `install.sh` or `install.ps1` directly to choose a different scope. The installer detects the platform, downloads the latest release ZIP, verifies its SHA-256 checksum, and installs it under the user's local application data directory.
+   The installer detects the platform, downloads the latest release ZIP, verifies its SHA-256 checksum, and installs it under the user's local application data directory. Rivet then presents the workspace and command selection in its CLI. Select any built-ins, optionally add custom commands and allowed first arguments, and review the resulting scope before starting the tunnel.
 
    The launcher checks the latest stable release in the official [OpenAI tunnel-client repository](https://github.com/openai/tunnel-client/releases), downloads the matching platform archive if needed, verifies the SHA-256 from that same release, and installs `tunnel-client` with its bundled `cloudflared`. If GitHub is unavailable, an installed client is reused; the first install requires internet access.
 
@@ -30,20 +30,21 @@ ChatGPT cannot launch a local stdio process. Connect it through [OpenAI Secure M
 
 ## What the launch scripts do
 
-The release package contains `bin/rivet`, `rivet.toml`, and the setup scripts under `rivet/scripts/`. The TOML file stores resource limits and environment policy. The launcher passes roots and allowed programs to Rivet as startup arguments; it does not store the session scope in TOML.
+The release package contains `bin/rivet`, `rivet.toml`, and the tunnel support scripts under `rivet/scripts/`. The TOML file stores resource limits and environment policy. `rivet session` collects roots and allowed programs and passes them to the tunnel launcher as startup arguments; it does not store the session scope in TOML.
 
 In order, each script:
 
-1. Checks the session roots, allowed programs, and TOML with `rivet config-check` and `rivet doctor`.
-2. Checks GitHub for the latest stable tunnel-client version. If it is newer than the installed version, downloads and checksum-verifies the matching full client archive. The archive contains both `tunnel-client` and `cloudflared`.
-3. Prompts for the OpenAI tunnel ID, validates it, and creates a temporary profile with the MCP launcher and this session's scope.
-4. Prompts for the runtime API key with hidden input, runs `tunnel-client doctor`, then starts `tunnel-client run` in the foreground. The terminal stays occupied until the process exits; press Ctrl+C to stop it. The temporary profile is removed when the session ends.
+1. Rivet CLI collects the workspace root, selected built-in commands, and any custom commands. It displays the resulting scope before continuing.
+2. Checks the selected roots, allowed programs, and TOML with `rivet config-check` and `rivet doctor`.
+3. Checks GitHub for the latest stable tunnel-client version. If it is newer than the installed version, downloads and checksum-verifies the matching full client archive. The archive contains both `tunnel-client` and `cloudflared`.
+4. Prompts for the OpenAI tunnel ID, validates it, and creates a temporary profile with the MCP launcher and this session's scope.
+5. Prompts for the runtime API key with hidden input, runs `tunnel-client doctor`, then starts `tunnel-client run` in the foreground. The terminal stays occupied until the process exits; press Ctrl+C to stop it. The temporary profile is removed when the session ends.
 
 When tunnel-client starts Rivet, it invokes `serve-rivet-mcp.sh` on macOS/Linux or `serve-rivet-mcp.ps1` on Windows with the selected `--root` and command allowlist arguments. These launchers clear `CONTROL_PLANE_API_KEY`, `OPENAI_API_KEY`, and `OPENAI_ADMIN_KEY` from the child process environment before executing Rivet. The API key is not written to the profile or passed on a command line; it is held in the tunnel-client process environment while the tunnel runs.
 
 The launcher does not create a tunnel or API key in OpenAI Platform, change the ChatGPT workspace, or register Codex. It prints the Platform links, then accepts the tunnel ID and runtime key. The API key is requested each time. The tunnel profile is recreated with the current scope for each launch and removed when the session ends. Do not paste the API key into a command, config file, or profile.
 
-If no `--allow-command` flags are supplied, the command list is empty and command/process launch requests return `COMMAND_NOT_FOUND`. Rivet starts allowed executables directly without a shell or interactive terminal. See [session scope arguments](configuration.md#allowed-programs).
+The interactive selector starts with no commands selected. If you select none and add none, command/process launch requests return `COMMAND_NOT_FOUND`. Rivet starts allowed executables directly without a shell or interactive terminal. See [session scope arguments](configuration.md#allowed-programs).
 
 ### App metadata
 
