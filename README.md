@@ -20,12 +20,12 @@ Download the matching binary from [Releases](https://github.com/agredyaev/rivet/
 
 | OS | Architecture | Rust target | Release asset |
 | --- | --- | --- | --- |
-| Linux | x86_64 | `x86_64-unknown-linux-gnu` | `rivet-x86_64-unknown-linux-gnu` |
-| Linux | aarch64 | `aarch64-unknown-linux-gnu` | `rivet-aarch64-unknown-linux-gnu` |
-| macOS | arm64 (aarch64) | `aarch64-apple-darwin` | `rivet-aarch64-apple-darwin` |
-| Windows | x86_64 | `x86_64-pc-windows-gnu` | `rivet-x86_64-pc-windows-gnu.exe` |
+| Linux | x64 | `x86_64-unknown-linux-gnu` | `rivet-linux-x64.zip` |
+| Linux | aarch64 | `aarch64-unknown-linux-gnu` | `rivet-linux-aarch64.zip` |
+| macOS | arm64 | `aarch64-apple-darwin` | `rivet-darwin-arm64.zip` |
+| Windows | x64 | `x86_64-pc-windows-gnu` | `rivet-windows-x64.zip` |
 
-On macOS or Linux, rename the downloaded file to `rivet`. On Windows, keep the `.exe` extension.
+Extract the matching archive. It contains `rivet` on macOS and Linux, or `rivet.exe` on Windows.
 
 Copy the example file to `rivet.toml`. Set `filesystem.allowed_roots` to an existing absolute directory. The example uses `[]`, which Rivet rejects until you add a root.
 
@@ -79,4 +79,4 @@ cd rivet
 cargo build --locked --release
 ```
 
-CI runs formatting, Clippy, tests, and smoke checks on macOS, Linux, and Windows. Linux x86_64/aarch64 and Windows x86_64 GNU builds use `cargo-zigbuild`; GitHub releases contain binaries for those targets plus macOS arm64.
+CI runs formatting, Clippy, tests, and smoke checks on macOS, Linux, and Windows. Linux x64/aarch64 and Windows x64 GNU builds use `cargo-zigbuild`; GitHub releases contain ZIP archives named `rivet-linux-x64.zip`, `rivet-linux-aarch64.zip`, `rivet-darwin-arm64.zip`, and `rivet-windows-x64.zip`.

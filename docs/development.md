@@ -31,7 +31,7 @@ cargo zigbuild --locked --release \
   --target x86_64-pc-windows-gnu
 ```
 
-The CI workflow runs native builds and smoke tests on macOS, Linux, and Windows. It runs the cross-built Linux x86_64 binary on Ubuntu and Windows executable on Windows. Published GitHub releases include Linux x86_64/aarch64, macOS arm64, and Windows x86_64 binaries named with their Rust target triples.
+The CI workflow runs native builds and smoke tests on macOS, Linux, and Windows. It runs the cross-built Linux x64 binary on Ubuntu and Windows executable on Windows. Published GitHub releases contain `rivet-linux-x64.zip`, `rivet-linux-aarch64.zip`, `rivet-darwin-arm64.zip`, and `rivet-windows-x64.zip`; each archive contains the platform binary.
 
 ## Profiling
 

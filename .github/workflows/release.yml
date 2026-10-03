@@ -22,19 +22,19 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             binary: rivet
-            asset: rivet-x86_64-unknown-linux-gnu
+            asset: rivet-linux-x64.zip
           - os: ubuntu-latest
             target: aarch64-unknown-linux-gnu
             binary: rivet
-            asset: rivet-aarch64-unknown-linux-gnu
+            asset: rivet-linux-aarch64.zip
           - os: macos-latest
             target: aarch64-apple-darwin
             binary: rivet
-            asset: rivet-aarch64-apple-darwin
+            asset: rivet-darwin-arm64.zip
           - os: ubuntu-latest
             target: x86_64-pc-windows-gnu
             binary: rivet.exe
-            asset: rivet-x86_64-pc-windows-gnu.exe
+            asset: rivet-windows-x64.zip
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     steps:
@@ -52,7 +52,7 @@ jobs:
         run: cargo build --locked --release --target ${{ matrix.target }}
       - run: |
           mkdir dist
-          cp target/${{ matrix.target }}/release/${{ matrix.binary }} dist/${{ matrix.asset }}
+          zip -j dist/${{ matrix.asset }} target/${{ matrix.target }}/release/${{ matrix.binary }}
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: release-${{ matrix.target }}
@@ -79,7 +79,13 @@ jobs:
           existing_assets=$(gh release view "$TAG" --json assets --jq '.assets[].name')
           while IFS= read -r asset; do
             case "$asset" in
-              rivet-linux-x64|rivet-macos-arm64|rivet-windows-x64.exe|SHA256SUMS)
+              rivet-x86_64-unknown-linux-gnu|\
+              rivet-aarch64-unknown-linux-gnu|\
+              rivet-aarch64-apple-darwin|\
+              rivet-x86_64-pc-windows-gnu.exe|\
+              rivet-linux-x64|rivet-linux-aarch64|rivet-macos-arm64|rivet-windows-x64.exe|\
+              rivet-linux-x64.zip|rivet-linux-aarch64.zip|rivet-darwin-arm64.zip|rivet-windows-x64.zip|\
+              SHA256SUMS)
                 gh release delete-asset "$TAG" "$asset" --yes
                 ;;
             esac
