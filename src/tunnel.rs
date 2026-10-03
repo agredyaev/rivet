@@ -4,7 +4,8 @@ use std::{
     io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
     process::{Command, ExitCode},
-    time::{SystemTime, UNIX_EPOCH},
+    thread,
+    time::{Duration, Instant, SystemTime, UNIX_EPOCH},
 };
 
 const RELEASE_API: &str = "https://api.github.com/repos/openai/tunnel-client/releases/latest";
@@ -285,6 +286,35 @@ fn quote(value: &str) -> String {
     format!("\"{}\"", value.replace('\\', "\\\\").replace('"', "\\\""))
 }
 
+fn run_with_timeout(command: &mut Command, label: &str, timeout: Duration) -> Result<(), String> {
+    println!("  {label}...");
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("Could not start {label}: {error}"))?;
+    let started = Instant::now();
+    loop {
+        match child
+            .try_wait()
+            .map_err(|error| format!("Could not monitor {label}: {error}"))?
+        {
+            Some(status) if status.success() => {
+                println!("  ✓ {label}.");
+                return Ok(());
+            }
+            Some(status) => return Err(format!("{label} failed with {status}")),
+            None if started.elapsed() >= timeout => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(format!(
+                    "{label} timed out after {} seconds",
+                    timeout.as_secs()
+                ));
+            }
+            None => thread::sleep(Duration::from_millis(100)),
+        }
+    }
+}
+
 pub fn run(root: &Path, rivet: &Path, config: &Path, args: &[String]) -> ExitCode {
     if !io::stdin().is_terminal() {
         eprintln!("Rivet session needs an interactive terminal.");
@@ -319,57 +349,58 @@ pub fn run(root: &Path, rivet: &Path, config: &Path, args: &[String]) -> ExitCod
             quote(config.to_str().ok_or("Invalid config path")?),
             args.iter().map(|a| quote(a)).collect::<Vec<_>>().join(" ")
         );
-        let init = Command::new(&tunnel)
-            .args([
-                "init",
-                "--force",
-                "--sample",
-                "sample_mcp_stdio_local",
-                "--profile",
-                "rivet",
-                "--tunnel-id",
-                &tunnel_id,
-                "--mcp-command",
-                &mcp,
-                "--control-plane-api-key-ref",
-                "env:CONTROL_PLANE_API_KEY",
-            ])
-            .env("TUNNEL_CLIENT_PROFILE_DIR", &profile_dir)
-            .status()
-            .map_err(|e| format!("Could not run tunnel-client init: {e}"))?;
-        if !init.success() {
-            return Err("Could not create the temporary tunnel profile".into());
-        }
+        let mut init = Command::new(&tunnel);
+        init.args([
+            "init",
+            "--force",
+            "--sample",
+            "sample_mcp_stdio_local",
+            "--profile",
+            "rivet",
+            "--tunnel-id",
+            &tunnel_id,
+            "--mcp-command",
+            &mcp,
+            "--control-plane-api-key-ref",
+            "env:CONTROL_PLANE_API_KEY",
+        ])
+        .env("TUNNEL_CLIENT_PROFILE_DIR", &profile_dir);
+        run_with_timeout(
+            &mut init,
+            "Creating temporary tunnel profile",
+            Duration::from_secs(30),
+        )?;
         let key = secret("Runtime API key (input hidden): ")?;
         if key.is_empty() {
             return Err("Runtime API key cannot be empty".into());
         }
-        println!("  Checking credentials...");
-        let mut doctor = Command::new(&tunnel)
+        let mut doctor = Command::new(&tunnel);
+        doctor
             .args(["doctor", "--profile", "rivet", "--explain"])
             .env("TUNNEL_CLIENT_PROFILE_DIR", &profile_dir)
-            .env("CONTROL_PLANE_API_KEY", &key)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-        if !doctor.wait().map_err(|e| e.to_string())?.success() {
-            return Err("Tunnel credentials or scope validation failed".into());
-        }
-        println!(
-            "\n  ✓ Credentials accepted\n  Tunnel is running. Keep this terminal open; press Ctrl+C to stop it."
-        );
-        let result = Command::new(&tunnel)
+            .env("CONTROL_PLANE_API_KEY", &key);
+        run_with_timeout(
+            &mut doctor,
+            "Checking tunnel credentials and configuration",
+            Duration::from_secs(60),
+        )?;
+
+        println!("  Starting tunnel-client...");
+        let mut tunnel_process = Command::new(&tunnel)
             .args(["run", "--profile", "rivet"])
             .env("TUNNEL_CLIENT_PROFILE_DIR", &profile_dir)
             .env("CONTROL_PLANE_API_KEY", &key)
-            .status()
-            .map_err(|e| e.to_string());
-        result.and_then(|s| {
-            if s.success() {
-                Ok(())
-            } else {
-                Err(format!("tunnel-client exited with {s}"))
-            }
-        })
+            .spawn()
+            .map_err(|error| format!("Could not start tunnel-client: {error}"))?;
+        println!("\n  ✓ tunnel-client started. Keep this terminal open; press Ctrl+C to stop it.");
+        let status = tunnel_process
+            .wait()
+            .map_err(|error| format!("Could not wait for tunnel-client: {error}"))?;
+        if status.success() {
+            Ok(())
+        } else {
+            Err(format!("tunnel-client exited with {status}"))
+        }
     })();
     match status {
         Ok(()) => ExitCode::SUCCESS,
