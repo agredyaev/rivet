@@ -1,8 +1,7 @@
 use sha2::{Digest, Sha256};
 use std::{
-    env,
-    fs::{self, File},
-    io::{self, IsTerminal, Read, Write},
+    env, fs,
+    io::{self, IsTerminal, Write},
     path::{Path, PathBuf},
     process::{Command, ExitCode},
     time::{SystemTime, UNIX_EPOCH},
@@ -15,19 +14,6 @@ struct ProfileCleanup(PathBuf);
 impl Drop for ProfileCleanup {
     fn drop(&mut self) {
         let _ = fs::remove_file(&self.0);
-    }
-}
-
-#[cfg(not(windows))]
-fn command(program: &str, args: &[&str]) -> Result<(), String> {
-    let status = Command::new(program)
-        .args(args)
-        .status()
-        .map_err(|error| format!("Could not run {program}: {error}"))?;
-    if status.success() {
-        Ok(())
-    } else {
-        Err(format!("{program} exited with {status}"))
     }
 }
 
@@ -56,29 +42,13 @@ fn download(url: &str, path: &Path) -> Result<(), String> {
 }
 
 fn platform() -> Result<&'static str, String> {
-    #[cfg(target_os = "macos")]
-    let os = "darwin";
-    #[cfg(target_os = "linux")]
-    let os = "linux";
-    #[cfg(target_os = "windows")]
-    let os = "windows";
-    #[cfg(not(any(target_os = "macos", target_os = "linux", target_os = "windows")))]
-    return Err("Unsupported operating system for OpenAI tunnel-client".into());
-
-    #[cfg(target_arch = "x86_64")]
-    let arch = "amd64";
-    #[cfg(target_arch = "aarch64")]
-    let arch = "arm64";
-    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
-    return Err("Unsupported CPU architecture for OpenAI tunnel-client".into());
-
-    Ok(match (os, arch) {
-        ("linux", "amd64") => "linux-amd64",
-        ("linux", "arm64") => "linux-arm64",
-        ("darwin", "amd64") => "darwin-amd64",
-        ("darwin", "arm64") => "darwin-arm64",
-        ("windows", "amd64") => "windows-amd64",
-        ("windows", "arm64") => "windows-arm64",
+    Ok(match (env::consts::OS, env::consts::ARCH) {
+        ("linux", "x86_64") => "linux-amd64",
+        ("linux", "aarch64") => "linux-arm64",
+        ("macos", "x86_64") => "darwin-amd64",
+        ("macos", "aarch64") => "darwin-arm64",
+        ("windows", "x86_64") => "windows-amd64",
+        ("windows", "aarch64") => "windows-arm64",
         _ => return Err("Unsupported OpenAI tunnel-client target".into()),
     })
 }
@@ -186,10 +156,7 @@ fn install_client(bin: &Path) -> Result<PathBuf, String> {
         let sums_path = temp.join("SHA256SUMS.txt");
         download(archive_url, &archive_path)?;
         download(checksum, &sums_path)?;
-        let mut sums = String::new();
-        File::open(&sums_path)
-            .and_then(|mut f| f.read_to_string(&mut sums))
-            .map_err(|e| e.to_string())?;
+        let sums = fs::read_to_string(&sums_path).map_err(|e| e.to_string())?;
         let expected = sums
             .lines()
             .find_map(|line| {
@@ -199,10 +166,7 @@ fn install_client(bin: &Path) -> Result<PathBuf, String> {
                 (name == archive_name).then_some(hash.to_ascii_lowercase())
             })
             .ok_or_else(|| format!("Official checksum is missing for {archive_name}"))?;
-        let mut bytes = Vec::new();
-        File::open(&archive_path)
-            .and_then(|mut f| f.read_to_end(&mut bytes))
-            .map_err(|e| e.to_string())?;
+        let bytes = fs::read(&archive_path).map_err(|e| e.to_string())?;
         let actual = format!("{:x}", Sha256::digest(&bytes));
         if actual != expected {
             return Err(format!("SHA-256 verification failed for {archive_name}"));
@@ -224,15 +188,18 @@ fn install_client(bin: &Path) -> Result<PathBuf, String> {
             }
         }
         #[cfg(not(windows))]
-        command(
-            "unzip",
-            &[
-                "-q",
-                archive_path.to_str().ok_or("Invalid archive path")?,
-                "-d",
-                unpacked.to_str().ok_or("Invalid extraction path")?,
-            ],
-        )?;
+        {
+            let status = Command::new("unzip")
+                .arg("-q")
+                .arg(&archive_path)
+                .arg("-d")
+                .arg(&unpacked)
+                .status()
+                .map_err(|error| format!("Could not run unzip: {error}"))?;
+            if !status.success() {
+                return Err(format!("unzip exited with {status}"));
+            }
+        }
 
         let extracted_client = unpacked.join(client_name);
         let extracted_cloudflared = unpacked.join(if cfg!(windows) {

@@ -9,11 +9,7 @@ import threading
 import time
 from pathlib import Path
 
-CARGO_VERSION = next(
-    line.split('"')[1]
-    for line in (Path(__file__).parent.parent / "Cargo.toml").read_text().splitlines()
-    if line.startswith('version = "')
-)
+from smoke import assert_server_info
 
 
 def main():
@@ -82,13 +78,7 @@ allow_override = []
             raise AssertionError("process did not reach the expected state")
         try:
             info = send("initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "portable-smoke", "version": "1"}})
-            assert info["serverInfo"] == {
-                "name": "rivet",
-                "title": "Rivet",
-                "version": CARGO_VERSION,
-                "description": "Local MCP server for configured commands and allowed filesystem roots.",
-                "websiteUrl": "https://github.com/agredyaev/rivet",
-            }, info
+            assert_server_info(info)
             assert len(send("tools/list", {})["tools"]) == 11
             path = root / "text.txt"
             call("write_file", {"path": str(path), "content": "hello", "mode": "create"})
