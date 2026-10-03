@@ -229,16 +229,6 @@ fn install_client(bin: &Path) -> Result<PathBuf, String> {
     Ok(client)
 }
 
-fn input(prompt: &str) -> Result<String, String> {
-    print!("  {prompt}");
-    io::stdout().flush().map_err(|e| e.to_string())?;
-    let mut value = String::new();
-    io::stdin()
-        .read_line(&mut value)
-        .map_err(|error| format!("Could not read terminal input: {error}"))?;
-    Ok(value.trim().to_owned())
-}
-
 fn valid_tunnel_id(value: &str) -> bool {
     value.starts_with("tunnel_")
         && value.len() == 39
@@ -334,7 +324,7 @@ pub fn run(root: &Path, rivet: &Path, config: &Path, args: &[String]) -> ExitCod
         }
         let tunnel = install_client(&root.join("bin"))?;
         println!("\n  OpenAI tunnel: https://platform.openai.com/settings/organization/tunnels");
-        let tunnel_id = input("Tunnel ID: ")?;
+        let tunnel_id = secret("Tunnel ID (input hidden): ")?;
         if !valid_tunnel_id(&tunnel_id) {
             return Err("Expected tunnel_ followed by 32 hexadecimal characters".into());
         }
