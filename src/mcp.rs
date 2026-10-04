@@ -2,12 +2,7 @@
 //!
 //! Handlers delegate command, filesystem, and process policy to their modules
 //! and convert the results into MCP responses.
-use crate::{
-    commands::{self, CommandRequest},
-    config::Config,
-    filesystem,
-    process::ProcessTable,
-};
+use crate::{commands::CommandRequest, config::Config, filesystem, process::ProcessTable};
 use rmcp::{
     ServiceExt,
     handler::server::router::tool::ToolRouter,
@@ -85,6 +80,14 @@ struct ProcessOutputRequest {
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct ReadyProcessesRequest {
+    after_sequence: Option<u64>,
+    limit: Option<usize>,
+    output_limit: Option<usize>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct ProcessInputRequest {
     process_id: u64,
     text: String,
@@ -125,21 +128,48 @@ impl Rivet {
         result(Ok(json!({"commands": commands})))
     }
 
-    #[tool(description = "Run a registered command and collect bounded output")]
-    async fn run_command(&self, Parameters(request): Parameters<CommandRequest>) -> CallToolResult {
-        result(
-            commands::run(self.config.clone(), request)
-                .await
-                .map(|value| json!(value)),
-        )
+    #[tool(
+        description = "Submit a registered command and return a managed process handle immediately"
+    )]
+    fn run_command(&self, Parameters(request): Parameters<CommandRequest>) -> CallToolResult {
+        result(self.processes.run(self.config.clone(), request))
     }
 
     #[tool(description = "Start a registered long-running process")]
-    async fn start_process(
+    fn start_process(&self, Parameters(request): Parameters<CommandRequest>) -> CallToolResult {
+        result(self.processes.start(self.config.clone(), request))
+    }
+
+    #[tool(
+        description = "List retained managed processes for recovery after an interrupted request"
+    )]
+    fn list_processes(&self) -> CallToolResult {
+        result(Ok(self.processes.list()))
+    }
+
+    #[tool(
+        description = "List completed managed processes by completion sequence without consuming them"
+    )]
+    fn list_ready_processes(
         &self,
-        Parameters(request): Parameters<CommandRequest>,
+        Parameters(request): Parameters<ReadyProcessesRequest>,
     ) -> CallToolResult {
-        result(self.processes.start(self.config.clone(), request).await)
+        let max_output = self
+            .config
+            .limits
+            .max_stdout_bytes
+            .max(self.config.limits.max_stderr_bytes);
+        result(
+            self.processes.ready(
+                request.after_sequence.unwrap_or(0),
+                request
+                    .limit
+                    .unwrap_or(self.config.limits.max_running_processes),
+                request.output_limit.unwrap_or(0),
+                self.config.limits.max_running_processes,
+                max_output,
+            ),
+        )
     }
 
     #[tool(description = "Read bounded process stdout and stderr from byte offsets")]

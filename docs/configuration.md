@@ -27,7 +27,7 @@ default_timeout_ms = 120000
 max_timeout_ms = 1800000
 ```
 
-All values must be positive. `max_file_read_bytes` cannot exceed 64 MiB. `default_timeout_ms` cannot exceed `max_timeout_ms`; the maximum timeout cannot exceed 4,294,967,295 ms. Output and directory limits cap returned or retained data. The maximum timeout applies to both command and process requests.
+`max_running_processes` limits live managed processes. Completed retained entries do not consume live-process capacity. `max_file_read_bytes` cannot exceed 64 MiB. `default_timeout_ms` cannot exceed `max_timeout_ms`; the maximum timeout cannot exceed 4,294,967,295 ms. `run_command` returns a managed process handle immediately after spawn and supervisor handoff.
 
 ## Environment
 

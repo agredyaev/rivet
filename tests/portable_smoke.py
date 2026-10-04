@@ -79,13 +79,16 @@ allow_override = []
         try:
             info = send("initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "portable-smoke", "version": "1"}})
             assert_server_info(info)
-            assert len(send("tools/list", {})["tools"]) == 11
+            assert len(send("tools/list", {})["tools"]) == 13
             path = root / "text.txt"
             call("write_file", {"path": str(path), "content": "hello", "mode": "create"})
             call("replace_text", {"path": str(path), "old": "hello", "new": "world", "expected_occurrences": 1})
             assert call("read_file", {"path": str(path)})["text"] == "world"
             call("read_file", {"path": str(root.parent / "outside.txt")}, "PATH_DENIED")
-            assert call("run_command", command("echo"))["stdout"].strip() == "ready"
+            submitted = call("run_command", command("echo"))
+            assert submitted["state"] == "submitted"
+            completed = wait_output(submitted["process_id"], lambda value: not value["status"]["running"])
+            assert completed["stdout"]["text"].strip() == "ready"
             process_id = call("start_process", command("input"))["process_id"]
             call("send_process_input", {"process_id": process_id, "text": "hello\n"})
             assert wait_output(process_id, lambda value: not value["status"]["running"])["stdout"]["text"].strip() == "hello"

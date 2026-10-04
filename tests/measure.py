@@ -91,7 +91,7 @@ allow_override = []
             "rss_kib_and_cpu_percent_after_reads": after_reads,
             "read_file_total_wall_ms": round(reads_wall_ms, 3),
             "read_file_median_ms": round(statistics.median(reads), 3),
-            "run_command_echo_median_ms_21_calls": round(statistics.median(commands), 3),
+            "run_command_submit_echo_median_ms_21_calls": round(statistics.median(commands), 3),
         }, indent=2))
 
 

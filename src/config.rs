@@ -186,7 +186,7 @@ impl Config {
             || limits.max_timeout_ms > u32::MAX as u64
             || limits.default_timeout_ms > limits.max_timeout_ms
         {
-            return Err("limits must be positive, max_file_read_bytes <= 64 MiB, and default_timeout_ms <= max_timeout_ms".into());
+            return Err("limits must be positive, max_file_read_bytes <= 64 MiB, and default_timeout_ms must not exceed max_timeout_ms".into());
         }
         let configured_roots = cli_roots;
         if configured_roots.is_empty() {
