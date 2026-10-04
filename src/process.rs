@@ -104,7 +104,7 @@ struct ProcessEntry {
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum SlotKind {
-    Foreground,
+    ForegroundBurst,
     Background,
 }
 
@@ -116,8 +116,8 @@ struct EntryRecord {
 struct TableState {
     entries: HashMap<ProcessId, EntryRecord>,
     next: u64,
-    running_total: usize,
     running_background: usize,
+    running_foreground: usize,
 }
 
 enum InputMode {
@@ -152,17 +152,17 @@ impl ProcessTable {
             state: Arc::new(Mutex::new(TableState {
                 entries: HashMap::new(),
                 next: 1,
-                running_total: 0,
                 running_background: 0,
+                running_foreground: 0,
             })),
         }
     }
 
-    fn background_limit(config: &Config) -> usize {
+    fn registry_limit(config: &Config) -> usize {
         config
             .limits
             .max_running_processes
-            .saturating_sub(config.limits.foreground_process_reserve)
+            .saturating_add(config.limits.foreground_burst_processes)
     }
 
     fn get(&self, id: u64) -> Result<Arc<ProcessEntry>, Fault> {
@@ -178,11 +178,10 @@ impl ProcessTable {
     fn release_slot_locked(state: &mut TableState, id: ProcessId) {
         let slot = state.entries.get(&id).and_then(|record| record.slot);
         match slot {
-            Some(SlotKind::Foreground) => {
-                state.running_total = state.running_total.saturating_sub(1);
+            Some(SlotKind::ForegroundBurst) => {
+                state.running_foreground = state.running_foreground.saturating_sub(1);
             }
             Some(SlotKind::Background) => {
-                state.running_total = state.running_total.saturating_sub(1);
                 state.running_background = state.running_background.saturating_sub(1);
             }
             None => return,
@@ -216,19 +215,31 @@ impl ProcessTable {
         });
 
         let mut state = self.state.lock().unwrap();
-        if state.running_total >= config.limits.max_running_processes {
-            return Err(Fault::new("PROCESS_LIMIT", "process capacity is full"));
-        }
-        if matches!(admission, Admission::Background)
-            && state.running_background >= Self::background_limit(config)
-        {
-            return Err(Fault::new(
-                "PROCESS_LIMIT",
-                "background process capacity is full",
-            ));
-        }
+        let slot = match admission {
+            Admission::Background => {
+                if state.running_background >= config.limits.max_running_processes {
+                    return Err(Fault::new(
+                        "PROCESS_LIMIT",
+                        "background process capacity is full",
+                    ));
+                }
+                SlotKind::Background
+            }
+            Admission::Foreground => {
+                if state.running_background < config.limits.max_running_processes {
+                    SlotKind::Background
+                } else if state.running_foreground < config.limits.foreground_burst_processes {
+                    SlotKind::ForegroundBurst
+                } else {
+                    return Err(Fault::new(
+                        "PROCESS_LIMIT",
+                        "foreground burst capacity is full",
+                    ));
+                }
+            }
+        };
 
-        if state.entries.len() >= config.limits.max_running_processes
+        if state.entries.len() >= Self::registry_limit(config)
             && let Some(oldest) = state
                 .entries
                 .iter()
@@ -245,13 +256,9 @@ impl ProcessTable {
             .checked_add(1)
             .ok_or_else(|| Fault::new("PROCESS_LIMIT", "process IDs exhausted"))?;
 
-        let slot = match admission {
-            Admission::Foreground => SlotKind::Foreground,
-            Admission::Background => SlotKind::Background,
-        };
-        state.running_total += 1;
-        if slot == SlotKind::Background {
-            state.running_background += 1;
+        match slot {
+            SlotKind::Background => state.running_background += 1,
+            SlotKind::ForegroundBurst => state.running_foreground += 1,
         }
         state.entries.insert(
             id,
@@ -394,10 +401,11 @@ impl ProcessTable {
 
             *supervisor_entry.stdin.lock().await = None;
             status.duration_ms = Some(supervisor_entry.started.elapsed().as_millis() as u64);
+            {
+                let mut state = state.lock().unwrap();
+                ProcessTable::release_slot_locked(&mut state, id);
+            }
             status_tx.send_replace(status);
-
-            let mut state = state.lock().unwrap();
-            ProcessTable::release_slot_locked(&mut state, id);
         });
 
         Ok(SpawnedProcess {
@@ -422,11 +430,12 @@ impl ProcessTable {
         if slot == Some(SlotKind::Background) {
             return Ok(Promotion::Promoted);
         }
-        if state.running_background >= Self::background_limit(config) {
+        if state.running_background >= config.limits.max_running_processes {
             return Ok(Promotion::Full);
         }
 
         state.running_background += 1;
+        state.running_foreground = state.running_foreground.saturating_sub(1);
         state
             .entries
             .get_mut(&id)
@@ -613,8 +622,8 @@ impl ProcessTable {
         rows.sort_by_key(|row| row["process_id"].as_u64().unwrap_or(0));
         json!({
             "processes": rows,
-            "running_total": state.running_total,
             "running_background": state.running_background,
+            "running_foreground": state.running_foreground,
         })
     }
 
