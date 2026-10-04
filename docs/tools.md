@@ -27,7 +27,7 @@ Rivet exposes these tools over MCP stdio. Paths and command working directories 
 
 `start_process` returns `process_id`. `list_processes` returns retained running and completed processes with their IDs, command names, status, and duration. Use it to recover a handle after an interrupted MCP response. `read_process_output` accepts `process_id`, optional `stdout_offset`, `stderr_offset`, and `limit`; offsets are byte positions. The response includes text, next offsets, total byte counts, and truncation state. `send_process_input` accepts `process_id` and UTF-8 `text`. `stop_process` accepts `process_id`.
 
-Process state exists only while the Rivet server is running. When the process table is full, Rivet evicts the oldest completed entry before refusing a new process.
+Process state exists only while the Rivet server is running. Live child processes consume `max_running_processes` capacity. `start_process` and detached `run_command` jobs use background capacity, while `foreground_process_reserve` stays available for short `run_command` calls. Completed retained entries do not consume live-process capacity. Rivet evicts the oldest completed entry when retained state reaches the configured process bound.
 
 ## Files
 
