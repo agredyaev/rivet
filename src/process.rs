@@ -1,7 +1,7 @@
-//! Lifecycle and bounded output capture for long-running child processes.
+//! Lifecycle and bounded output capture for managed child processes.
 //!
-//! The table retains a configured number of process entries. Each output stream
-//! stores a capped prefix while tracking total bytes for offset-based reads.
+//! The table owns every child that can outlive one MCP request. Each output
+//! stream stores a capped prefix while tracking total bytes for offset reads.
 use crate::{
     commands::{CommandRequest, admitted, terminate},
     config::Config,
@@ -12,6 +12,7 @@ use serde_json::json;
 use std::{
     collections::HashMap,
     io,
+    process::Stdio,
     sync::{Arc, Mutex},
     time::Instant,
 };
@@ -22,8 +23,10 @@ use tokio::{
     time::{Duration, Instant as TokioInstant},
 };
 
+const TERMINATION_SETTLE_MS: u64 = 2_000;
+
 #[repr(transparent)]
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Serialize)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
 pub struct ProcessId(u64);
 
 #[derive(Clone, Serialize)]
@@ -48,12 +51,14 @@ impl Buffer {
             truncated: false,
         }
     }
+
     fn append(&mut self, chunk: &[u8], cap: usize) {
         self.total += chunk.len() as u64;
         let count = chunk.len().min(cap.saturating_sub(self.bytes.len()));
         self.bytes.extend_from_slice(&chunk[..count]);
         self.truncated |= count < chunk.len();
     }
+
     fn slice(&self, offset: u64, limit: usize) -> Result<OutputSlice, Fault> {
         if offset > self.total {
             return Err(Fault::new(
@@ -87,6 +92,7 @@ struct OutputSlice {
 }
 
 struct ProcessEntry {
+    command: String,
     stdout: Arc<Mutex<Buffer>>,
     stderr: Arc<Mutex<Buffer>>,
     stdin: AsyncMutex<Option<ChildStdin>>,
@@ -95,10 +101,22 @@ struct ProcessEntry {
     started: Instant,
 }
 
+enum InputMode {
+    Closed,
+    Piped,
+}
+
+struct SpawnedProcess {
+    id: ProcessId,
+    entry: Arc<ProcessEntry>,
+    timeout_ms: u64,
+}
+
 pub struct ProcessTable {
     entries: Mutex<HashMap<ProcessId, Arc<ProcessEntry>>>,
     next: Mutex<u64>,
 }
+
 impl ProcessTable {
     pub fn new() -> Self {
         Self {
@@ -116,12 +134,59 @@ impl ProcessTable {
             .ok_or_else(|| Fault::new("PROCESS_NOT_FOUND", "process ID is unknown or was evicted"))
     }
 
-    pub async fn start(
+    fn insert_entry(
+        &self,
+        config: &Config,
+        command: String,
+        stop_tx: oneshot::Sender<()>,
+        status_rx: watch::Receiver<Status>,
+    ) -> Result<(ProcessId, Arc<ProcessEntry>), Fault> {
+        let entry = Arc::new(ProcessEntry {
+            command,
+            stdout: Arc::new(Mutex::new(Buffer::new())),
+            stderr: Arc::new(Mutex::new(Buffer::new())),
+            stdin: AsyncMutex::new(None),
+            stop: Mutex::new(Some(stop_tx)),
+            status: status_rx,
+            started: Instant::now(),
+        });
+        let mut entries = self.entries.lock().unwrap();
+
+        if entries.len() >= config.limits.max_running_processes
+            && let Some(oldest) = entries
+                .iter()
+                .filter(|(_, e)| !e.status.borrow().running)
+                .min_by_key(|(_, e)| e.started)
+                .map(|(id, _)| *id)
+        {
+            entries.remove(&oldest);
+        }
+        if entries.len() >= config.limits.max_running_processes {
+            return Err(Fault::new("PROCESS_LIMIT", "process table is full"));
+        }
+
+        let mut next = self.next.lock().unwrap();
+        let id = ProcessId(*next);
+        *next = next
+            .checked_add(1)
+            .ok_or_else(|| Fault::new("PROCESS_LIMIT", "process IDs exhausted"))?;
+        entries.insert(id, entry.clone());
+        Ok((id, entry))
+    }
+
+    fn spawn(
         &self,
         config: Arc<Config>,
         request: CommandRequest,
-    ) -> Result<serde_json::Value, Fault> {
-        let (mut command, timeout_ms) = admitted(&config, &request, config.limits.max_timeout_ms)?;
+        default_timeout_ms: u64,
+        input_mode: InputMode,
+    ) -> Result<SpawnedProcess, Fault> {
+        let command_name = request.command.clone();
+        let (mut command, timeout_ms) = admitted(&config, &request, default_timeout_ms)?;
+        if matches!(input_mode, InputMode::Closed) {
+            command.stdin(Stdio::null());
+        }
+
         let (stop_tx, stop_rx) = oneshot::channel();
         let (status_tx, status_rx) = watch::channel(Status {
             running: true,
@@ -130,37 +195,8 @@ impl ProcessTable {
             stopped: false,
             duration_ms: None,
         });
-        let entry = Arc::new(ProcessEntry {
-            stdout: Arc::new(Mutex::new(Buffer::new())),
-            stderr: Arc::new(Mutex::new(Buffer::new())),
-            stdin: AsyncMutex::new(None),
-            stop: Mutex::new(Some(stop_tx)),
-            status: status_rx,
-            started: Instant::now(),
-        });
-        let id = {
-            let mut entries = self.entries.lock().unwrap();
-            // Reclaim the oldest completed entry before refusing a new process.
-            if entries.len() >= config.limits.max_running_processes
-                && let Some(oldest) = entries
-                    .iter()
-                    .filter(|(_, e)| !e.status.borrow().running)
-                    .min_by_key(|(_, e)| e.started)
-                    .map(|(id, _)| *id)
-            {
-                entries.remove(&oldest);
-            }
-            if entries.len() >= config.limits.max_running_processes {
-                return Err(Fault::new("PROCESS_LIMIT", "process table is full"));
-            }
-            let mut next = self.next.lock().unwrap();
-            let id = ProcessId(*next);
-            *next = next
-                .checked_add(1)
-                .ok_or_else(|| Fault::new("PROCESS_LIMIT", "process IDs exhausted"))?;
-            entries.insert(id, entry.clone());
-            id
-        };
+        let (id, entry) = self.insert_entry(&config, command_name, stop_tx, status_rx)?;
+
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
@@ -173,12 +209,22 @@ impl ProcessTable {
             }
         };
         let Some(pid) = child.id() else {
+            let _ = child.start_kill();
             self.entries.lock().unwrap().remove(&id);
             return Err(Fault::new("SPAWN_ERROR", "spawned child has no process ID"));
         };
-        *entry.stdin.lock().await = child.stdin.take();
+
+        if matches!(input_mode, InputMode::Piped) {
+            *entry
+                .stdin
+                .try_lock()
+                .expect("new process stdin lock must be uncontended") = child.stdin.take();
+        } else {
+            let _ = child.stdin.take();
+        }
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
+
         let out_task = tokio::spawn(drain_into(
             stdout,
             entry.stdout.clone(),
@@ -189,34 +235,205 @@ impl ProcessTable {
             entry.stderr.clone(),
             config.limits.max_stderr_bytes,
         ));
+
+        let supervisor_entry = entry.clone();
         tokio::spawn(async move {
             let deadline = TokioInstant::now() + Duration::from_millis(timeout_ms);
             let mut stop_rx = stop_rx;
             let (mut status, needs_stop) = tokio::select! {
-                result = child.wait() => (Status { running: false, exit_code: result.ok().and_then(|s| s.code()), timed_out: false, stopped: false, duration_ms: None }, false),
-                _ = &mut stop_rx => (Status { running: false, exit_code: None, timed_out: false, stopped: true, duration_ms: None }, true),
-                _ = tokio::time::sleep_until(deadline) => (Status { running: false, exit_code: None, timed_out: true, stopped: false, duration_ms: None }, true),
+                result = child.wait() => (
+                    Status {
+                        running: false,
+                        exit_code: result.ok().and_then(|s| s.code()),
+                        timed_out: false,
+                        stopped: false,
+                        duration_ms: None,
+                    },
+                    false,
+                ),
+                _ = &mut stop_rx => (
+                    Status {
+                        running: false,
+                        exit_code: None,
+                        timed_out: false,
+                        stopped: true,
+                        duration_ms: None,
+                    },
+                    true,
+                ),
+                _ = tokio::time::sleep_until(deadline) => (
+                    Status {
+                        running: false,
+                        exit_code: None,
+                        timed_out: true,
+                        stopped: false,
+                        duration_ms: None,
+                    },
+                    true,
+                ),
             };
+
             if needs_stop {
                 let _ = terminate(&mut child, pid).await;
             }
+
             let mut outputs = Box::pin(async {
                 let _ = tokio::join!(out_task, err_task);
             });
             if !needs_stop {
                 tokio::select! {
                     _ = &mut outputs => {},
-                    _ = &mut stop_rx => { status.stopped = true; let _ = terminate(&mut child, pid).await; outputs.await; },
-                    _ = tokio::time::sleep_until(deadline) => { status.timed_out = true; let _ = terminate(&mut child, pid).await; outputs.await; },
+                    _ = &mut stop_rx => {
+                        status.stopped = true;
+                        let _ = terminate(&mut child, pid).await;
+                        outputs.await;
+                    },
+                    _ = tokio::time::sleep_until(deadline) => {
+                        status.timed_out = true;
+                        let _ = terminate(&mut child, pid).await;
+                        outputs.await;
+                    },
                 }
             } else {
                 outputs.await;
             }
-            *entry.stdin.lock().await = None;
-            status.duration_ms = Some(entry.started.elapsed().as_millis() as u64);
+
+            *supervisor_entry.stdin.lock().await = None;
+            status.duration_ms = Some(supervisor_entry.started.elapsed().as_millis() as u64);
             status_tx.send_replace(status);
         });
-        Ok(json!({"process_id": id.0}))
+
+        Ok(SpawnedProcess {
+            id,
+            entry,
+            timeout_ms,
+        })
+    }
+
+    fn run_value(
+        entry: &ProcessEntry,
+        id: ProcessId,
+        state: &str,
+        retain_process_id: bool,
+        config: &Config,
+    ) -> Result<serde_json::Value, Fault> {
+        let stdout = entry
+            .stdout
+            .lock()
+            .unwrap()
+            .slice(0, config.limits.max_stdout_bytes)?;
+        let stderr = entry
+            .stderr
+            .lock()
+            .unwrap()
+            .slice(0, config.limits.max_stderr_bytes)?;
+        let status = entry.status.borrow().clone();
+        let duration_ms = status
+            .duration_ms
+            .unwrap_or_else(|| entry.started.elapsed().as_millis() as u64);
+
+        Ok(json!({
+            "state": state,
+            "process_id": retain_process_id.then_some(id.0),
+            "exit_code": status.exit_code,
+            "stdout": stdout.text,
+            "stderr": stderr.text,
+            "stdout_offset": stdout.next_offset,
+            "stderr_offset": stderr.next_offset,
+            "duration_ms": duration_ms,
+            "timed_out": status.timed_out,
+            "truncated": stdout.truncated || stderr.truncated,
+        }))
+    }
+
+    pub async fn run(
+        &self,
+        config: Arc<Config>,
+        request: CommandRequest,
+    ) -> Result<serde_json::Value, Fault> {
+        let foreground_wait_ms = config.limits.foreground_wait_ms;
+        let spawned = self.spawn(
+            config.clone(),
+            request,
+            config.limits.default_timeout_ms,
+            InputMode::Closed,
+        )?;
+
+        let wait_ms = if spawned.timeout_ms <= foreground_wait_ms {
+            spawned.timeout_ms.saturating_add(TERMINATION_SETTLE_MS)
+        } else {
+            foreground_wait_ms
+        };
+        let mut status = spawned.entry.status.clone();
+        if status.borrow().running {
+            let _ = tokio::time::timeout(Duration::from_millis(wait_ms), async {
+                while status.borrow().running {
+                    if status.changed().await.is_err() {
+                        break;
+                    }
+                }
+            })
+            .await;
+        }
+
+        let final_status = status.borrow().clone();
+        if final_status.running {
+            return Self::run_value(&spawned.entry, spawned.id, "running", true, &config);
+        }
+
+        let value = Self::run_value(&spawned.entry, spawned.id, "completed", false, &config)?;
+        self.entries.lock().unwrap().remove(&spawned.id);
+
+        if final_status.timed_out {
+            return Err(Fault::with(
+                "COMMAND_TIMEOUT",
+                "command timed out",
+                json!({
+                    "exit_code": value["exit_code"],
+                    "stdout": value["stdout"],
+                    "stderr": value["stderr"],
+                    "duration_ms": value["duration_ms"],
+                    "timed_out": true,
+                    "truncated": value["truncated"],
+                }),
+            ));
+        }
+        Ok(value)
+    }
+
+    pub fn start(
+        &self,
+        config: Arc<Config>,
+        request: CommandRequest,
+    ) -> Result<serde_json::Value, Fault> {
+        let spawned = self.spawn(
+            config.clone(),
+            request,
+            config.limits.max_timeout_ms,
+            InputMode::Piped,
+        )?;
+        Ok(json!({"process_id": spawned.id.0}))
+    }
+
+    pub fn list(&self) -> serde_json::Value {
+        let entries = self.entries.lock().unwrap();
+        let mut rows: Vec<_> = entries
+            .iter()
+            .map(|(id, entry)| {
+                let status = entry.status.borrow().clone();
+                let duration_ms = status
+                    .duration_ms
+                    .unwrap_or_else(|| entry.started.elapsed().as_millis() as u64);
+                json!({
+                    "process_id": id.0,
+                    "command": entry.command,
+                    "status": status,
+                    "duration_ms": duration_ms,
+                })
+            })
+            .collect();
+        rows.sort_by_key(|row| row["process_id"].as_u64().unwrap_or(0));
+        json!({"processes": rows})
     }
 
     pub fn read(
