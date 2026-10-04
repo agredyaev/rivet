@@ -66,6 +66,7 @@ max_directory_entries = 4
 max_running_processes = 2
 default_timeout_ms = 1000
 max_timeout_ms = 5000
+foreground_wait_ms = 100
 [environment]
 pass = ["PATH"]
 allow_override = ["RIVET_TEST"]
@@ -115,13 +116,15 @@ allow_override = ["RIVET_TEST"]
             proc.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
             proc.stdin.flush()
             tools = send(proc, 2, "tools/list", {})["tools"]
-            assert {tool["name"] for tool in tools} == {"list_roots", "list_commands", "run_command", "start_process", "read_process_output", "send_process_input", "stop_process", "list_directory", "read_file", "write_file", "replace_text"}
+            assert {tool["name"] for tool in tools} == {"list_roots", "list_commands", "run_command", "start_process", "list_processes", "read_process_output", "send_process_input", "stop_process", "list_directory", "read_file", "write_file", "replace_text"}
             assert all(tool["inputSchema"]["type"] == "object" for tool in tools)
             assert call(proc, 102, "list_roots", {})["roots"] == [str(root.resolve())]
             names = call(proc, 3, "list_commands", {})["commands"]
             assert [entry["name"] for entry in names] == ["cat", "echo", "env", "sh"]
             base = {"command": "echo", "args": [";", "&&", "|", ">", "$(date)", "`date`"], "cwd": tmp}
-            assert call(proc, 4, "run_command", base)["stdout"] == "; && | > $(date) `date`\n"
+            completed = call(proc, 4, "run_command", base)
+            assert completed["state"] == "completed"
+            assert completed["stdout"] == "; && | > $(date) `date`\n"
             call(proc, 5, "run_command", {**base, "command": "missing"}, "COMMAND_NOT_FOUND")
             call(proc, 6, "run_command", {**base, "command": "sh", "args": ["-x"]}, "SUBCOMMAND_DENIED")
             call(proc, 7, "run_command", {**base, "cwd": "/"}, "PATH_DENIED")
@@ -171,6 +174,17 @@ allow_override = ["RIVET_TEST"]
             timeout = call(proc, 23, "run_command", {"command": "sh", "args": ["-c", "echo ready; sleep 3"], "cwd": tmp, "timeout_ms": 50}, "COMMAND_TIMEOUT")
             assert "ready" in timeout["details"]["stdout"]
             call(proc, 231, "run_command", {"command": "sh", "args": ["-c", "sleep 3 &"], "cwd": tmp, "timeout_ms": 50}, "COMMAND_TIMEOUT")
+            detached = call(proc, 232, "run_command", {"command": "sh", "args": ["-c", "sleep .4; printf detached"], "cwd": tmp, "timeout_ms": 1000})
+            assert detached["state"] == "running" and detached["process_id"]
+            detached_id = detached["process_id"]
+            listed = call(proc, 233, "list_processes", {})["processes"]
+            assert any(row["process_id"] == detached_id and row["command"] == "sh" for row in listed)
+            for _ in range(30):
+                read = call(proc, 234, "read_process_output", {"process_id": detached_id, "limit": 64})
+                if not read["status"]["running"]: break
+                time.sleep(.05)
+            else: raise AssertionError("detached run_command did not complete")
+            assert read["stdout"]["text"] == "detached"
             started = call(proc, 24, "start_process", {"command": "cat", "args": [], "cwd": tmp})["process_id"]
             call(proc, 25, "send_process_input", {"process_id": started, "text": "hello\n"})
             for _ in range(20):
