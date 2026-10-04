@@ -28,9 +28,10 @@ max_stderr_bytes = 2097152
 max_file_read_bytes = 4194304
 max_directory_entries = 1000
 max_running_processes = 8
+foreground_process_reserve = 2
 default_timeout_ms = 120000
 max_timeout_ms = 1800000
-foreground_wait_ms = 500
+foreground_wait_ms = 100
 [environment]
 pass = ["PATH"]
 allow_override = []
