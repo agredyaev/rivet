@@ -29,6 +29,12 @@ pub struct Limits {
     pub max_running_processes: usize,
     pub default_timeout_ms: u64,
     pub max_timeout_ms: u64,
+    #[serde(default = "default_foreground_wait_ms")]
+    pub foreground_wait_ms: u64,
+}
+
+fn default_foreground_wait_ms() -> u64 {
+    500
 }
 
 #[derive(Deserialize)]
@@ -183,10 +189,12 @@ impl Config {
             || limits.max_running_processes == 0
             || limits.default_timeout_ms == 0
             || limits.max_timeout_ms == 0
+            || limits.foreground_wait_ms == 0
             || limits.max_timeout_ms > u32::MAX as u64
             || limits.default_timeout_ms > limits.max_timeout_ms
+            || limits.foreground_wait_ms > limits.max_timeout_ms
         {
-            return Err("limits must be positive, max_file_read_bytes <= 64 MiB, and default_timeout_ms <= max_timeout_ms".into());
+            return Err("limits must be positive, max_file_read_bytes <= 64 MiB, and default_timeout_ms and foreground_wait_ms must not exceed max_timeout_ms".into());
         }
         let configured_roots = cli_roots;
         if configured_roots.is_empty() {
