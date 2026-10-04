@@ -226,6 +226,8 @@ allow_override = ["RIVET_TEST"]
             else: raise AssertionError("process output missing")
             assert read["stdout"]["next_offset"] == 6
             second = call(proc, 27, "start_process", {"command": "cat", "args": [], "cwd": tmp})["process_id"]
+            lost = call(proc, 270, "list_ready_processes", {"after_sequence": 0, "limit": 2})
+            assert lost["gap"] and not lost["processes"] and lost["latest_sequence"] > 0, lost
             call(proc, 271, "run_command", {"command": "echo", "args": ["full"], "cwd": tmp}, "PROCESS_LIMIT")
             call(proc, 272, "run_command", {"command": "sh", "args": ["-c", "sleep 2"], "cwd": tmp, "timeout_ms": 1000}, "PROCESS_LIMIT")
             call(proc, 28, "start_process", {"command": "cat", "args": [], "cwd": tmp}, "PROCESS_LIMIT")

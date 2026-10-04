@@ -445,8 +445,10 @@ impl ProcessTable {
                 .and_then(|record| record.completion_sequence)
         });
         let latest_sequence = state.next_completion.saturating_sub(1);
-        let gap = oldest_available_sequence
-            .is_some_and(|oldest| after_sequence.saturating_add(1) < oldest);
+        let gap = match oldest_available_sequence {
+            Some(oldest) => after_sequence.saturating_add(1) < oldest,
+            None => after_sequence < latest_sequence,
+        };
 
         let mut rows = Vec::new();
         let mut next_after_sequence = after_sequence;
