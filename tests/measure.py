@@ -28,10 +28,8 @@ max_stderr_bytes = 2097152
 max_file_read_bytes = 4194304
 max_directory_entries = 1000
 max_running_processes = 8
-foreground_process_reserve = 2
 default_timeout_ms = 120000
 max_timeout_ms = 1800000
-foreground_wait_ms = 100
 [environment]
 pass = ["PATH"]
 allow_override = []
@@ -93,7 +91,7 @@ allow_override = []
             "rss_kib_and_cpu_percent_after_reads": after_reads,
             "read_file_total_wall_ms": round(reads_wall_ms, 3),
             "read_file_median_ms": round(statistics.median(reads), 3),
-            "run_command_echo_median_ms_21_calls": round(statistics.median(commands), 3),
+            "run_command_submit_echo_median_ms_21_calls": round(statistics.median(commands), 3),
         }, indent=2))
 
 

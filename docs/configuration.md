@@ -23,13 +23,11 @@ max_stderr_bytes = 2097152
 max_file_read_bytes = 4194304
 max_directory_entries = 1000
 max_running_processes = 8
-foreground_process_reserve = 2
 default_timeout_ms = 120000
 max_timeout_ms = 1800000
-foreground_wait_ms = 100
 ```
 
-`max_running_processes` limits live child processes. `foreground_process_reserve` keeps part of that capacity available to `run_command`; it defaults to 1 and cannot exceed `max_running_processes`. Completed retained entries do not consume live-process capacity. `max_file_read_bytes` cannot exceed 64 MiB. `default_timeout_ms` and `foreground_wait_ms` cannot exceed `max_timeout_ms`; the maximum timeout cannot exceed 4,294,967,295 ms. `foreground_wait_ms` defaults to 100 ms when omitted. `run_command` returns a managed process handle when the command still runs after this foreground window.
+`max_running_processes` limits live managed processes. Completed retained entries do not consume live-process capacity. `max_file_read_bytes` cannot exceed 64 MiB. `default_timeout_ms` cannot exceed `max_timeout_ms`; the maximum timeout cannot exceed 4,294,967,295 ms. `run_command` returns a managed process handle immediately after spawn and supervisor handoff.
 
 ## Environment
 

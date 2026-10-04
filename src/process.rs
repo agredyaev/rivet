@@ -1,7 +1,7 @@
 //! Lifecycle and bounded output capture for managed child processes.
 //!
-//! The registry retains bounded process state. Execution capacity tracks only
-//! live processes and keeps foreground capacity available for short MCP calls.
+//! A bounded registry owns active and retained processes. Supervisors move
+//! completed process IDs into a completion queue when the OS reports exit.
 use crate::{
     commands::{CommandRequest, admitted, terminate},
     config::Config,
@@ -10,7 +10,7 @@ use crate::{
 use serde::Serialize;
 use serde_json::json;
 use std::{
-    collections::HashMap,
+    collections::{HashMap, VecDeque},
     io,
     process::Stdio,
     sync::{Arc, Mutex},
@@ -22,8 +22,6 @@ use tokio::{
     sync::{Mutex as AsyncMutex, oneshot, watch},
     time::{Duration, Instant as TokioInstant},
 };
-
-const TERMINATION_SETTLE_MS: u64 = 2_000;
 
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
@@ -102,44 +100,23 @@ struct ProcessEntry {
     started: Instant,
 }
 
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum SlotKind {
-    ForegroundBurst,
-    Background,
-}
-
 struct EntryRecord {
     process: Arc<ProcessEntry>,
-    slot: Option<SlotKind>,
+    active: bool,
+    completion_sequence: Option<u64>,
 }
 
 struct TableState {
     entries: HashMap<ProcessId, EntryRecord>,
-    next: u64,
-    running_background: usize,
-    running_foreground: usize,
+    ready: VecDeque<ProcessId>,
+    next_process: u64,
+    next_completion: u64,
+    running: usize,
 }
 
 enum InputMode {
     Closed,
     Piped,
-}
-
-enum Admission {
-    Foreground,
-    Background,
-}
-
-enum Promotion {
-    Promoted,
-    Completed,
-    Full,
-}
-
-struct SpawnedProcess {
-    id: ProcessId,
-    entry: Arc<ProcessEntry>,
-    timeout_ms: u64,
 }
 
 pub struct ProcessTable {
@@ -151,18 +128,12 @@ impl ProcessTable {
         Self {
             state: Arc::new(Mutex::new(TableState {
                 entries: HashMap::new(),
-                next: 1,
-                running_background: 0,
-                running_foreground: 0,
+                ready: VecDeque::new(),
+                next_process: 1,
+                next_completion: 1,
+                running: 0,
             })),
         }
-    }
-
-    fn registry_limit(config: &Config) -> usize {
-        config
-            .limits
-            .max_running_processes
-            .saturating_add(config.limits.foreground_burst_processes)
     }
 
     fn get(&self, id: u64) -> Result<Arc<ProcessEntry>, Fault> {
@@ -175,24 +146,24 @@ impl ProcessTable {
             .ok_or_else(|| Fault::new("PROCESS_NOT_FOUND", "process ID is unknown or was evicted"))
     }
 
-    fn release_slot_locked(state: &mut TableState, id: ProcessId) {
-        let slot = state.entries.get(&id).and_then(|record| record.slot);
-        match slot {
-            Some(SlotKind::ForegroundBurst) => {
-                state.running_foreground = state.running_foreground.saturating_sub(1);
-            }
-            Some(SlotKind::Background) => {
-                state.running_background = state.running_background.saturating_sub(1);
-            }
-            None => return,
+    fn remove_ready_locked(state: &mut TableState, id: ProcessId) {
+        state.ready.retain(|queued| *queued != id);
+    }
+
+    fn release_active_locked(state: &mut TableState, id: ProcessId) {
+        let active = state.entries.get(&id).is_some_and(|record| record.active);
+        if !active {
+            return;
         }
+        state.running = state.running.saturating_sub(1);
         if let Some(record) = state.entries.get_mut(&id) {
-            record.slot = None;
+            record.active = false;
         }
     }
 
     fn remove_entry_locked(state: &mut TableState, id: ProcessId) {
-        Self::release_slot_locked(state, id);
+        Self::release_active_locked(state, id);
+        Self::remove_ready_locked(state, id);
         state.entries.remove(&id);
     }
 
@@ -202,7 +173,6 @@ impl ProcessTable {
         command: String,
         stop_tx: oneshot::Sender<()>,
         status_rx: watch::Receiver<Status>,
-        admission: Admission,
     ) -> Result<(ProcessId, Arc<ProcessEntry>), Fault> {
         let entry = Arc::new(ProcessEntry {
             command,
@@ -215,56 +185,31 @@ impl ProcessTable {
         });
 
         let mut state = self.state.lock().unwrap();
-        let slot = match admission {
-            Admission::Background => {
-                if state.running_background >= config.limits.max_running_processes {
-                    return Err(Fault::new(
-                        "PROCESS_LIMIT",
-                        "background process capacity is full",
-                    ));
-                }
-                SlotKind::Background
-            }
-            Admission::Foreground => {
-                if state.running_background < config.limits.max_running_processes {
-                    SlotKind::Background
-                } else if state.running_foreground < config.limits.foreground_burst_processes {
-                    SlotKind::ForegroundBurst
-                } else {
-                    return Err(Fault::new(
-                        "PROCESS_LIMIT",
-                        "foreground burst capacity is full",
-                    ));
-                }
-            }
-        };
-
-        if state.entries.len() >= Self::registry_limit(config)
-            && let Some(oldest) = state
-                .entries
-                .iter()
-                .filter(|(_, record)| record.slot.is_none())
-                .min_by_key(|(_, record)| record.process.started)
-                .map(|(id, _)| *id)
-        {
-            state.entries.remove(&oldest);
+        if state.running >= config.limits.max_running_processes {
+            return Err(Fault::new("PROCESS_LIMIT", "process capacity is full"));
         }
 
-        let id = ProcessId(state.next);
-        state.next = state
-            .next
+        if state.entries.len() >= config.limits.max_running_processes
+            && let Some(oldest) = state.ready.front().copied()
+        {
+            Self::remove_entry_locked(&mut state, oldest);
+        }
+        if state.entries.len() >= config.limits.max_running_processes {
+            return Err(Fault::new("PROCESS_LIMIT", "process registry is full"));
+        }
+
+        let id = ProcessId(state.next_process);
+        state.next_process = state
+            .next_process
             .checked_add(1)
             .ok_or_else(|| Fault::new("PROCESS_LIMIT", "process IDs exhausted"))?;
-
-        match slot {
-            SlotKind::Background => state.running_background += 1,
-            SlotKind::ForegroundBurst => state.running_foreground += 1,
-        }
+        state.running += 1;
         state.entries.insert(
             id,
             EntryRecord {
                 process: entry.clone(),
-                slot: Some(slot),
+                active: true,
+                completion_sequence: None,
             },
         );
         Ok((id, entry))
@@ -276,8 +221,7 @@ impl ProcessTable {
         request: CommandRequest,
         default_timeout_ms: u64,
         input_mode: InputMode,
-        admission: Admission,
-    ) -> Result<SpawnedProcess, Fault> {
+    ) -> Result<ProcessId, Fault> {
         let command_name = request.command.clone();
         let (mut command, timeout_ms) = admitted(&config, &request, default_timeout_ms)?;
         if matches!(input_mode, InputMode::Closed) {
@@ -292,8 +236,7 @@ impl ProcessTable {
             stopped: false,
             duration_ms: None,
         });
-        let (id, entry) =
-            self.insert_entry(&config, command_name, stop_tx, status_rx, admission)?;
+        let (id, entry) = self.insert_entry(&config, command_name, stop_tx, status_rx)?;
 
         let mut child = match command.spawn() {
             Ok(child) => child,
@@ -401,189 +344,35 @@ impl ProcessTable {
 
             *supervisor_entry.stdin.lock().await = None;
             status.duration_ms = Some(supervisor_entry.started.elapsed().as_millis() as u64);
-            {
-                let mut state = state.lock().unwrap();
-                ProcessTable::release_slot_locked(&mut state, id);
-            }
+
+            let mut state = state.lock().unwrap();
             status_tx.send_replace(status);
+            ProcessTable::release_active_locked(&mut state, id);
+            if state.entries.contains_key(&id) {
+                let sequence = state.next_completion;
+                state.next_completion = state.next_completion.saturating_add(1);
+                if let Some(record) = state.entries.get_mut(&id) {
+                    record.completion_sequence = Some(sequence);
+                }
+                state.ready.push_back(id);
+            }
         });
 
-        Ok(SpawnedProcess {
-            id,
-            entry,
-            timeout_ms,
-        })
+        Ok(id)
     }
 
-    fn promote_to_background(&self, id: ProcessId, config: &Config) -> Result<Promotion, Fault> {
-        let mut state = self.state.lock().unwrap();
-        let record = state.entries.get(&id).ok_or_else(|| {
-            Fault::new("PROCESS_NOT_FOUND", "process ID is unknown or was evicted")
-        })?;
-        let slot = record.slot;
-        let running = record.process.status.borrow().running;
-
-        if !running || slot.is_none() {
-            Self::release_slot_locked(&mut state, id);
-            return Ok(Promotion::Completed);
-        }
-        if slot == Some(SlotKind::Background) {
-            return Ok(Promotion::Promoted);
-        }
-        if state.running_background >= config.limits.max_running_processes {
-            return Ok(Promotion::Full);
-        }
-
-        state.running_background += 1;
-        state.running_foreground = state.running_foreground.saturating_sub(1);
-        state
-            .entries
-            .get_mut(&id)
-            .expect("process entry exists")
-            .slot = Some(SlotKind::Background);
-        Ok(Promotion::Promoted)
-    }
-
-    fn request_stop(&self, id: ProcessId) {
-        let entry = self
-            .state
-            .lock()
-            .unwrap()
-            .entries
-            .get(&id)
-            .map(|record| record.process.clone());
-        if let Some(entry) = entry
-            && let Some(sender) = entry.stop.lock().unwrap().take()
-        {
-            let _ = sender.send(());
-        }
-    }
-
-    fn remove_completed(&self, id: ProcessId) {
-        let mut state = self.state.lock().unwrap();
-        if state
-            .entries
-            .get(&id)
-            .is_some_and(|record| record.slot.is_none())
-        {
-            state.entries.remove(&id);
-        }
-    }
-
-    fn run_value(
-        entry: &ProcessEntry,
-        id: ProcessId,
-        state: &str,
-        retain_process_id: bool,
-        config: &Config,
-    ) -> Result<serde_json::Value, Fault> {
-        let stdout = entry
-            .stdout
-            .lock()
-            .unwrap()
-            .slice(0, config.limits.max_stdout_bytes)?;
-        let stderr = entry
-            .stderr
-            .lock()
-            .unwrap()
-            .slice(0, config.limits.max_stderr_bytes)?;
-        let status = entry.status.borrow().clone();
-        let duration_ms = status
-            .duration_ms
-            .unwrap_or_else(|| entry.started.elapsed().as_millis() as u64);
-
-        Ok(json!({
-            "state": state,
-            "process_id": retain_process_id.then_some(id.0),
-            "exit_code": status.exit_code,
-            "stdout": stdout.text,
-            "stderr": stderr.text,
-            "stdout_offset": stdout.next_offset,
-            "stderr_offset": stderr.next_offset,
-            "duration_ms": duration_ms,
-            "timed_out": status.timed_out,
-            "truncated": stdout.truncated || stderr.truncated,
-        }))
-    }
-
-    fn completed_run_value(
-        &self,
-        spawned: &SpawnedProcess,
-        config: &Config,
-    ) -> Result<serde_json::Value, Fault> {
-        let final_status = spawned.entry.status.borrow().clone();
-        let value = Self::run_value(&spawned.entry, spawned.id, "completed", false, config)?;
-        self.remove_completed(spawned.id);
-
-        if final_status.timed_out {
-            return Err(Fault::with(
-                "COMMAND_TIMEOUT",
-                "command timed out",
-                json!({
-                    "exit_code": value["exit_code"],
-                    "stdout": value["stdout"],
-                    "stderr": value["stderr"],
-                    "duration_ms": value["duration_ms"],
-                    "timed_out": true,
-                    "truncated": value["truncated"],
-                }),
-            ));
-        }
-        Ok(value)
-    }
-
-    pub async fn run(
+    pub fn run(
         &self,
         config: Arc<Config>,
         request: CommandRequest,
     ) -> Result<serde_json::Value, Fault> {
-        let foreground_wait_ms = config.limits.foreground_wait_ms;
-        let spawned = self.spawn(
+        let id = self.spawn(
             config.clone(),
             request,
             config.limits.default_timeout_ms,
             InputMode::Closed,
-            Admission::Foreground,
         )?;
-
-        let wait_ms = if spawned.timeout_ms <= foreground_wait_ms {
-            spawned.timeout_ms.saturating_add(TERMINATION_SETTLE_MS)
-        } else {
-            foreground_wait_ms
-        };
-        let mut status = spawned.entry.status.clone();
-        if status.borrow().running {
-            let _ = tokio::time::timeout(Duration::from_millis(wait_ms), async {
-                while status.borrow().running {
-                    if status.changed().await.is_err() {
-                        break;
-                    }
-                }
-            })
-            .await;
-        }
-
-        if !status.borrow().running {
-            return self.completed_run_value(&spawned, &config);
-        }
-
-        match self.promote_to_background(spawned.id, &config)? {
-            Promotion::Promoted => {
-                Self::run_value(&spawned.entry, spawned.id, "running", true, &config)
-            }
-            Promotion::Completed => self.completed_run_value(&spawned, &config),
-            Promotion::Full => {
-                if !spawned.entry.status.borrow().running {
-                    return self.completed_run_value(&spawned, &config);
-                }
-                self.request_stop(spawned.id);
-                Err(Fault::with(
-                    "PROCESS_LIMIT",
-                    "background process capacity is full",
-                    json!({"foreground_wait_ms": foreground_wait_ms}),
-                ))
-            }
-        }
+        Ok(json!({"state": "submitted", "process_id": id.0}))
     }
 
     pub fn start(
@@ -591,14 +380,13 @@ impl ProcessTable {
         config: Arc<Config>,
         request: CommandRequest,
     ) -> Result<serde_json::Value, Fault> {
-        let spawned = self.spawn(
+        let id = self.spawn(
             config.clone(),
             request,
             config.limits.max_timeout_ms,
             InputMode::Piped,
-            Admission::Background,
         )?;
-        Ok(json!({"process_id": spawned.id.0}))
+        Ok(json!({"process_id": id.0}))
     }
 
     pub fn list(&self) -> serde_json::Value {
@@ -616,15 +404,79 @@ impl ProcessTable {
                     "command": record.process.command,
                     "status": status,
                     "duration_ms": duration_ms,
+                    "completion_sequence": record.completion_sequence,
                 })
             })
             .collect();
         rows.sort_by_key(|row| row["process_id"].as_u64().unwrap_or(0));
         json!({
             "processes": rows,
-            "running_background": state.running_background,
-            "running_foreground": state.running_foreground,
+            "running": state.running,
+            "ready": state.ready.len(),
         })
+    }
+
+    pub fn ready(
+        &self,
+        after_sequence: u64,
+        limit: usize,
+        max_results: usize,
+    ) -> Result<serde_json::Value, Fault> {
+        if limit == 0 || limit > max_results {
+            return Err(Fault::new(
+                "INVALID_REQUEST",
+                "ready result limit is outside configured bounds",
+            ));
+        }
+
+        let state = self.state.lock().unwrap();
+        let oldest_available_sequence = state.ready.front().and_then(|id| {
+            state
+                .entries
+                .get(id)
+                .and_then(|record| record.completion_sequence)
+        });
+        let latest_sequence = state.next_completion.saturating_sub(1);
+        let gap = oldest_available_sequence
+            .is_some_and(|oldest| after_sequence.saturating_add(1) < oldest);
+
+        let mut rows = Vec::new();
+        let mut next_after_sequence = after_sequence;
+        for id in &state.ready {
+            if rows.len() >= limit {
+                break;
+            }
+            let Some(record) = state.entries.get(id) else {
+                continue;
+            };
+            let Some(sequence) = record.completion_sequence else {
+                continue;
+            };
+            if sequence <= after_sequence {
+                continue;
+            }
+            let stdout = record.process.stdout.lock().unwrap();
+            let stderr = record.process.stderr.lock().unwrap();
+            let status = record.process.status.borrow().clone();
+            rows.push(json!({
+                "completion_sequence": sequence,
+                "process_id": id.0,
+                "command": record.process.command,
+                "status": status,
+                "stdout_bytes": stdout.total,
+                "stderr_bytes": stderr.total,
+                "truncated": stdout.truncated || stderr.truncated,
+            }));
+            next_after_sequence = sequence;
+        }
+
+        Ok(json!({
+            "processes": rows,
+            "next_after_sequence": next_after_sequence,
+            "oldest_available_sequence": oldest_available_sequence,
+            "latest_sequence": latest_sequence,
+            "gap": gap,
+        }))
     }
 
     pub fn read(
@@ -704,6 +556,7 @@ impl ProcessTable {
             .unwrap()
             .entries
             .values()
+            .filter(|record| record.active)
             .map(|record| record.process.clone())
             .collect();
         for entry in &entries {

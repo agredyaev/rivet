@@ -80,6 +80,13 @@ struct ProcessOutputRequest {
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct ReadyProcessesRequest {
+    after_sequence: Option<u64>,
+    limit: Option<usize>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct ProcessInputRequest {
     process_id: u64,
     text: String,
@@ -121,10 +128,10 @@ impl Rivet {
     }
 
     #[tool(
-        description = "Run a registered command briefly; return a managed process handle if it is still running"
+        description = "Submit a registered command and return a managed process handle immediately"
     )]
-    async fn run_command(&self, Parameters(request): Parameters<CommandRequest>) -> CallToolResult {
-        result(self.processes.run(self.config.clone(), request).await)
+    fn run_command(&self, Parameters(request): Parameters<CommandRequest>) -> CallToolResult {
+        result(self.processes.run(self.config.clone(), request))
     }
 
     #[tool(description = "Start a registered long-running process")]
@@ -137,6 +144,24 @@ impl Rivet {
     )]
     fn list_processes(&self) -> CallToolResult {
         result(Ok(self.processes.list()))
+    }
+
+    #[tool(
+        description = "List completed managed processes by completion sequence without consuming them"
+    )]
+    fn list_ready_processes(
+        &self,
+        Parameters(request): Parameters<ReadyProcessesRequest>,
+    ) -> CallToolResult {
+        result(
+            self.processes.ready(
+                request.after_sequence.unwrap_or(0),
+                request
+                    .limit
+                    .unwrap_or(self.config.limits.max_running_processes),
+                self.config.limits.max_running_processes,
+            ),
+        )
     }
 
     #[tool(description = "Read bounded process stdout and stderr from byte offsets")]

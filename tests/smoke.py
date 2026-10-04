@@ -43,6 +43,30 @@ def call(proc, number, name, arguments, error=None):
     return result["structuredContent"]
 
 
+_wait_call_id = 900000
+
+def run_to_completion(proc, number, arguments):
+    global _wait_call_id
+    submitted = call(proc, number, "run_command", arguments)
+    assert submitted["state"] == "submitted" and submitted["process_id"], submitted
+    process_id = submitted["process_id"]
+    for _ in range(120):
+        _wait_call_id += 1
+        result = call(proc, _wait_call_id, "read_process_output", {"process_id": process_id, "limit": 64})
+        if not result["status"]["running"]:
+            return {
+                "process_id": process_id,
+                "exit_code": result["status"]["exit_code"],
+                "timed_out": result["status"]["timed_out"],
+                "stopped": result["status"]["stopped"],
+                "stdout": result["stdout"]["text"],
+                "stderr": result["stderr"]["text"],
+                "truncated": result["stdout"]["truncated"] or result["stderr"]["truncated"],
+            }
+        time.sleep(.05)
+    raise AssertionError("submitted run_command did not complete")
+
+
 def assert_server_info(result):
     assert result["serverInfo"] == {
         "name": "rivet",
@@ -63,11 +87,9 @@ max_stdout_bytes = 64
 max_stderr_bytes = 64
 max_file_read_bytes = 1024
 max_directory_entries = 4
-max_running_processes = 3
-foreground_process_reserve = 1
+max_running_processes = 2
 default_timeout_ms = 1000
 max_timeout_ms = 5000
-foreground_wait_ms = 100
 [environment]
 pass = ["PATH"]
 allow_override = ["RIVET_TEST"]
@@ -117,20 +139,19 @@ allow_override = ["RIVET_TEST"]
             proc.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
             proc.stdin.flush()
             tools = send(proc, 2, "tools/list", {})["tools"]
-            assert {tool["name"] for tool in tools} == {"list_roots", "list_commands", "run_command", "start_process", "list_processes", "read_process_output", "send_process_input", "stop_process", "list_directory", "read_file", "write_file", "replace_text"}
+            assert {tool["name"] for tool in tools} == {"list_roots", "list_commands", "run_command", "start_process", "list_processes", "list_ready_processes", "read_process_output", "send_process_input", "stop_process", "list_directory", "read_file", "write_file", "replace_text"}
             assert all(tool["inputSchema"]["type"] == "object" for tool in tools)
             assert call(proc, 102, "list_roots", {})["roots"] == [str(root.resolve())]
             names = call(proc, 3, "list_commands", {})["commands"]
             assert [entry["name"] for entry in names] == ["cat", "echo", "env", "sh"]
             base = {"command": "echo", "args": [";", "&&", "|", ">", "$(date)", "`date`"], "cwd": tmp}
-            completed = call(proc, 4, "run_command", base)
-            assert completed["state"] == "completed"
+            completed = run_to_completion(proc, 4, base)
             assert completed["stdout"] == "; && | > $(date) `date`\n"
             call(proc, 5, "run_command", {**base, "command": "missing"}, "COMMAND_NOT_FOUND")
             call(proc, 6, "run_command", {**base, "command": "sh", "args": ["-x"]}, "SUBCOMMAND_DENIED")
             call(proc, 7, "run_command", {**base, "cwd": "/"}, "PATH_DENIED")
             call(proc, 8, "run_command", {**base, "env": {"SECRET": "x"}}, "COMMAND_DENIED")
-            env = call(proc, 9, "run_command", {**base, "command": "sh", "args": ["-c", "printf '%s' \"$RIVET_TEST\""], "env": {"RIVET_TEST": "yes"}})
+            env = run_to_completion(proc, 9, {**base, "command": "sh", "args": ["-c", "printf '%s' \"$RIVET_TEST\""], "env": {"RIVET_TEST": "yes"}})
             assert env["stdout"] == "yes"
             path = root / "file.txt"
             call(proc, 10, "write_file", {"path": str(path), "content": "héllo", "mode": "create"})
@@ -166,17 +187,17 @@ allow_override = ["RIVET_TEST"]
             inside_link = root / "inside"
             inside_link.symlink_to(path.name)
             assert call(proc, 201, "read_file", {"path": str(inside_link)})["text"] == "Hllo!"
-            assert call(proc, 202, "run_command", {"command": "echo", "args": [str(inside_link)], "cwd": tmp})["exit_code"] == 0
+            assert run_to_completion(proc, 202, {"command": "echo", "args": [str(inside_link)], "cwd": tmp})["exit_code"] == 0
             for i in range(5): (root / f"item{i}").touch()
             assert call(proc, 21, "list_directory", {"path": tmp, "max_entries": 4})["truncated"]
-            output = call(proc, 22, "run_command", {"command": "sh", "args": ["-c", "printf '%0100d' 0; printf '%0100d' 0 >&2"], "cwd": tmp})
+            output = run_to_completion(proc, 22, {"command": "sh", "args": ["-c", "printf '%0100d' 0; printf '%0100d' 0 >&2"], "cwd": tmp})
             assert output["truncated"] and len(output["stdout"]) == len(output["stderr"]) == 64
-            assert call(proc, 220, "run_command", {"command": "sh", "args": ["-c", "exit 7"], "cwd": tmp})["exit_code"] == 7
-            timeout = call(proc, 23, "run_command", {"command": "sh", "args": ["-c", "echo ready; sleep 3"], "cwd": tmp, "timeout_ms": 50}, "COMMAND_TIMEOUT")
-            assert "ready" in timeout["details"]["stdout"]
-            call(proc, 231, "run_command", {"command": "sh", "args": ["-c", "sleep 3 &"], "cwd": tmp, "timeout_ms": 50}, "COMMAND_TIMEOUT")
+            assert run_to_completion(proc, 220, {"command": "sh", "args": ["-c", "exit 7"], "cwd": tmp})["exit_code"] == 7
+            timeout = run_to_completion(proc, 23, {"command": "sh", "args": ["-c", "echo ready; sleep 3"], "cwd": tmp, "timeout_ms": 50})
+            assert timeout["timed_out"] and "ready" in timeout["stdout"]
+            assert run_to_completion(proc, 231, {"command": "sh", "args": ["-c", "sleep 3 &"], "cwd": tmp, "timeout_ms": 50})["timed_out"]
             detached = call(proc, 232, "run_command", {"command": "sh", "args": ["-c", "sleep .4; printf detached"], "cwd": tmp, "timeout_ms": 1000})
-            assert detached["state"] == "running" and detached["process_id"]
+            assert detached["state"] == "submitted" and detached["process_id"]
             detached_id = detached["process_id"]
             listed = call(proc, 233, "list_processes", {})["processes"]
             assert any(row["process_id"] == detached_id and row["command"] == "sh" for row in listed)
@@ -186,6 +207,13 @@ allow_override = ["RIVET_TEST"]
                 time.sleep(.05)
             else: raise AssertionError("detached run_command did not complete")
             assert read["stdout"]["text"] == "detached"
+            ready = call(proc, 235, "list_ready_processes", {"after_sequence": 0, "limit": 2})
+            assert ready["processes"], ready
+            replay = call(proc, 236, "list_ready_processes", {"after_sequence": 0, "limit": 2})
+            assert [row["completion_sequence"] for row in replay["processes"]] == [row["completion_sequence"] for row in ready["processes"]]
+            cursor = ready["processes"][-1]["completion_sequence"]
+            after_cursor = call(proc, 237, "list_ready_processes", {"after_sequence": cursor, "limit": 2})
+            assert all(row["completion_sequence"] > cursor for row in after_cursor["processes"])
             started = call(proc, 24, "start_process", {"command": "cat", "args": [], "cwd": tmp})["process_id"]
             call(proc, 25, "send_process_input", {"process_id": started, "text": "hello\n"})
             for _ in range(20):
@@ -195,8 +223,8 @@ allow_override = ["RIVET_TEST"]
             else: raise AssertionError("process output missing")
             assert read["stdout"]["next_offset"] == 6
             second = call(proc, 27, "start_process", {"command": "cat", "args": [], "cwd": tmp})["process_id"]
-            reserved = call(proc, 271, "run_command", {"command": "echo", "args": ["reserve"], "cwd": tmp})
-            assert reserved["state"] == "completed" and reserved["stdout"] == "reserve\n"
+            call(proc, 271, "run_command", {"command": "echo", "args": ["full"], "cwd": tmp}, "PROCESS_LIMIT")
+            call(proc, 272, "run_command", {"command": "sh", "args": ["-c", "sleep 2"], "cwd": tmp, "timeout_ms": 1000}, "PROCESS_LIMIT")
             call(proc, 28, "start_process", {"command": "cat", "args": [], "cwd": tmp}, "PROCESS_LIMIT")
             assert call(proc, 29, "stop_process", {"process_id": started})["status"]["stopped"]
             call(proc, 30, "stop_process", {"process_id": second})
@@ -209,7 +237,7 @@ allow_override = ["RIVET_TEST"]
             assert read["status"]["exit_code"] == 0
             assert read["stdout"]["text"] == "done\n"
             listed = call(proc, 33, "list_processes", {})["processes"]
-            assert len(listed) <= 3
+            assert len(listed) <= 2
             timed = call(proc, 34, "start_process", {"command": "sh", "args": ["-c", "sleep 3"], "cwd": tmp, "timeout_ms": 50})["process_id"]
             for _ in range(40):
                 read = call(proc, 35, "read_process_output", {"process_id": timed, "limit": 64})

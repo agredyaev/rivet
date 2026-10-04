@@ -27,20 +27,8 @@ pub struct Limits {
     pub max_file_read_bytes: usize,
     pub max_directory_entries: usize,
     pub max_running_processes: usize,
-    #[serde(default = "default_foreground_process_reserve")]
-    pub foreground_process_reserve: usize,
     pub default_timeout_ms: u64,
     pub max_timeout_ms: u64,
-    #[serde(default = "default_foreground_wait_ms")]
-    pub foreground_wait_ms: u64,
-}
-
-fn default_foreground_process_reserve() -> usize {
-    1
-}
-
-fn default_foreground_wait_ms() -> u64 {
-    100
 }
 
 #[derive(Deserialize)]
@@ -193,15 +181,12 @@ impl Config {
             || limits.max_file_read_bytes > 64 * 1024 * 1024
             || limits.max_directory_entries == 0
             || limits.max_running_processes == 0
-            || limits.foreground_process_reserve > limits.max_running_processes
             || limits.default_timeout_ms == 0
             || limits.max_timeout_ms == 0
-            || limits.foreground_wait_ms == 0
             || limits.max_timeout_ms > u32::MAX as u64
             || limits.default_timeout_ms > limits.max_timeout_ms
-            || limits.foreground_wait_ms > limits.max_timeout_ms
         {
-            return Err("limits must be positive, foreground_process_reserve must not exceed max_running_processes, max_file_read_bytes <= 64 MiB, and default_timeout_ms and foreground_wait_ms must not exceed max_timeout_ms".into());
+            return Err("limits must be positive, max_file_read_bytes <= 64 MiB, and default_timeout_ms must not exceed max_timeout_ms".into());
         }
         let configured_roots = cli_roots;
         if configured_roots.is_empty() {
