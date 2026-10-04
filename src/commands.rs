@@ -11,10 +11,9 @@ use std::os::windows::process::CommandExt;
 use std::{collections::BTreeMap, fs, io, path::Path, process::Stdio};
 #[cfg(unix)]
 use std::{os::fd::AsRawFd, os::unix::process::CommandExt};
-use tokio::{
-    process::{Child, Command},
-    time::Duration,
-};
+use tokio::process::{Child, Command};
+#[cfg(unix)]
+use tokio::time::Duration;
 
 #[derive(Clone, Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
