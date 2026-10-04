@@ -83,6 +83,7 @@ struct ProcessOutputRequest {
 struct ReadyProcessesRequest {
     after_sequence: Option<u64>,
     limit: Option<usize>,
+    output_limit: Option<usize>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -153,13 +154,20 @@ impl Rivet {
         &self,
         Parameters(request): Parameters<ReadyProcessesRequest>,
     ) -> CallToolResult {
+        let max_output = self
+            .config
+            .limits
+            .max_stdout_bytes
+            .max(self.config.limits.max_stderr_bytes);
         result(
             self.processes.ready(
                 request.after_sequence.unwrap_or(0),
                 request
                     .limit
                     .unwrap_or(self.config.limits.max_running_processes),
+                request.output_limit.unwrap_or(0),
                 self.config.limits.max_running_processes,
+                max_output,
             ),
         )
     }

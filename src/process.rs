@@ -420,12 +420,20 @@ impl ProcessTable {
         &self,
         after_sequence: u64,
         limit: usize,
+        output_limit: usize,
         max_results: usize,
+        max_output: usize,
     ) -> Result<serde_json::Value, Fault> {
         if limit == 0 || limit > max_results {
             return Err(Fault::new(
                 "INVALID_REQUEST",
                 "ready result limit is outside configured bounds",
+            ));
+        }
+        if output_limit > max_output {
+            return Err(Fault::new(
+                "INVALID_REQUEST",
+                "ready output_limit is outside configured bounds",
             ));
         }
 
@@ -457,14 +465,24 @@ impl ProcessTable {
             }
             let stdout = record.process.stdout.lock().unwrap();
             let stderr = record.process.stderr.lock().unwrap();
+            let stdout_slice = (output_limit > 0)
+                .then(|| stdout.slice(0, output_limit))
+                .transpose()?;
+            let stderr_slice = (output_limit > 0)
+                .then(|| stderr.slice(0, output_limit))
+                .transpose()?;
             let status = record.process.status.borrow().clone();
             rows.push(json!({
                 "completion_sequence": sequence,
                 "process_id": id.0,
                 "command": record.process.command,
                 "status": status,
+                "stdout": stdout_slice.as_ref().map(|slice| &slice.text),
+                "stderr": stderr_slice.as_ref().map(|slice| &slice.text),
                 "stdout_bytes": stdout.total,
                 "stderr_bytes": stderr.total,
+                "stdout_next_offset": stdout_slice.as_ref().map(|slice| slice.next_offset),
+                "stderr_next_offset": stderr_slice.as_ref().map(|slice| slice.next_offset),
                 "truncated": stdout.truncated || stderr.truncated,
             }));
             next_after_sequence = sequence;

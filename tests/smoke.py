@@ -207,8 +207,11 @@ allow_override = ["RIVET_TEST"]
                 time.sleep(.05)
             else: raise AssertionError("detached run_command did not complete")
             assert read["stdout"]["text"] == "detached"
-            ready = call(proc, 235, "list_ready_processes", {"after_sequence": 0, "limit": 2})
+            ready = call(proc, 235, "list_ready_processes", {"after_sequence": 0, "limit": 2, "output_limit": 64})
             assert ready["processes"], ready
+            detached_ready = next(row for row in ready["processes"] if row["process_id"] == detached_id)
+            assert detached_ready["stdout"] == "detached" and detached_ready["stderr"] == ""
+            call(proc, 2351, "list_ready_processes", {"after_sequence": 0, "limit": 2, "output_limit": 65}, "INVALID_REQUEST")
             replay = call(proc, 236, "list_ready_processes", {"after_sequence": 0, "limit": 2})
             assert [row["completion_sequence"] for row in replay["processes"]] == [row["completion_sequence"] for row in ready["processes"]]
             cursor = ready["processes"][-1]["completion_sequence"]

@@ -9,7 +9,7 @@ Rivet exposes these tools over MCP stdio. Paths and command working directories 
 | `run_command` | Submit a registered command and return its managed process handle immediately. |
 | `start_process` | Start a registered long-running command and return its process ID. |
 | `list_processes` | List retained managed processes for recovery after an interrupted request. |
-| `list_ready_processes` | List completed process IDs by completion sequence without consuming them. |
+| `list_ready_processes` | List completed processes by completion sequence and optionally include bounded stdout/stderr. |
 | `read_process_output` | Read captured stdout and stderr from byte offsets. |
 | `send_process_input` | Write text to a running process stdin. |
 | `stop_process` | Stop a running process and its descendants. |
@@ -26,7 +26,7 @@ Rivet exposes these tools over MCP stdio. Paths and command working directories 
 
 ## Processes
 
-`start_process` returns `process_id`. `list_processes` returns retained running and completed processes with their IDs, command names, status, and duration. `list_ready_processes` returns completed process metadata after an optional completion cursor. The cursor is non-destructive, so the same request can be retried safely. `read_process_output` accepts `process_id`, optional `stdout_offset`, `stderr_offset`, and `limit`; offsets are byte positions. The response includes text, next offsets, total byte counts, and truncation state. `send_process_input` accepts `process_id` and UTF-8 `text`. `stop_process` accepts `process_id`.
+`start_process` returns `process_id`. `list_processes` returns retained running and completed processes with their IDs, command names, status, and duration. `list_ready_processes` accepts optional `after_sequence`, `limit`, and `output_limit`. Set `output_limit` to include that many bounded bytes from each ready process stdout and stderr in the same MCP response. Omit it for metadata only. The cursor is non-destructive, so the same request can be retried safely. `read_process_output` accepts `process_id`, optional `stdout_offset`, `stderr_offset`, and `limit`; offsets are byte positions. Use it for output beyond the ready-response prefix. `send_process_input` accepts `process_id` and UTF-8 `text`. `stop_process` accepts `process_id`.
 
 Process state exists only while the Rivet server is running. Live child processes consume `max_running_processes` capacity. Completed entries move to the ready queue and no longer consume execution capacity. The retained registry stays bounded; Rivet evicts the oldest ready entry when it needs space for a new process.
 
