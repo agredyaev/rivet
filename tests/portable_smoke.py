@@ -37,6 +37,7 @@ max_stderr_bytes = 2048
 max_file_read_bytes = 4096
 max_directory_entries = 100
 max_running_processes = 4
+foreground_process_reserve = 1
 default_timeout_ms = 10000
 max_timeout_ms = 30000
 foreground_wait_ms = 100
