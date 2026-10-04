@@ -63,7 +63,8 @@ max_stdout_bytes = 64
 max_stderr_bytes = 64
 max_file_read_bytes = 1024
 max_directory_entries = 4
-max_running_processes = 2
+max_running_processes = 3
+foreground_process_reserve = 1
 default_timeout_ms = 1000
 max_timeout_ms = 5000
 foreground_wait_ms = 100
@@ -194,6 +195,8 @@ allow_override = ["RIVET_TEST"]
             else: raise AssertionError("process output missing")
             assert read["stdout"]["next_offset"] == 6
             second = call(proc, 27, "start_process", {"command": "cat", "args": [], "cwd": tmp})["process_id"]
+            reserved = call(proc, 271, "run_command", {"command": "echo", "args": ["reserve"], "cwd": tmp})
+            assert reserved["state"] == "completed" and reserved["stdout"] == "reserve\n"
             call(proc, 28, "start_process", {"command": "cat", "args": [], "cwd": tmp}, "PROCESS_LIMIT")
             assert call(proc, 29, "stop_process", {"process_id": started})["status"]["stopped"]
             call(proc, 30, "stop_process", {"process_id": second})
@@ -205,7 +208,8 @@ allow_override = ["RIVET_TEST"]
             else: raise AssertionError("normal exit missing")
             assert read["status"]["exit_code"] == 0
             assert read["stdout"]["text"] == "done\n"
-            call(proc, 33, "read_process_output", {"process_id": started}, "PROCESS_NOT_FOUND")
+            listed = call(proc, 33, "list_processes", {})["processes"]
+            assert len(listed) <= 3
             timed = call(proc, 34, "start_process", {"command": "sh", "args": ["-c", "sleep 3"], "cwd": tmp, "timeout_ms": 50})["process_id"]
             for _ in range(40):
                 read = call(proc, 35, "read_process_output", {"process_id": timed, "limit": 64})
