@@ -39,6 +39,7 @@ max_directory_entries = 100
 max_running_processes = 4
 default_timeout_ms = 10000
 max_timeout_ms = 30000
+foreground_wait_ms = 100
 [environment]
 pass = ["PATH", "SystemRoot", "WINDIR"]
 allow_override = []
@@ -79,13 +80,14 @@ allow_override = []
         try:
             info = send("initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "portable-smoke", "version": "1"}})
             assert_server_info(info)
-            assert len(send("tools/list", {})["tools"]) == 11
+            assert len(send("tools/list", {})["tools"]) == 12
             path = root / "text.txt"
             call("write_file", {"path": str(path), "content": "hello", "mode": "create"})
             call("replace_text", {"path": str(path), "old": "hello", "new": "world", "expected_occurrences": 1})
             assert call("read_file", {"path": str(path)})["text"] == "world"
             call("read_file", {"path": str(root.parent / "outside.txt")}, "PATH_DENIED")
-            assert call("run_command", command("echo"))["stdout"].strip() == "ready"
+            completed = call("run_command", command("echo"))
+            assert completed["state"] == "completed" and completed["stdout"].strip() == "ready"
             process_id = call("start_process", command("input"))["process_id"]
             call("send_process_input", {"process_id": process_id, "text": "hello\n"})
             assert wait_output(process_id, lambda value: not value["status"]["running"])["stdout"]["text"].strip() == "hello"
