@@ -1,7 +1,7 @@
 //! Lifecycle and bounded output capture for managed child processes.
 //!
-//! The table owns every child that can outlive one MCP request. Each output
-//! stream stores a capped prefix while tracking total bytes for offset reads.
+//! The registry retains bounded process state. Execution capacity tracks only
+//! live processes and keeps foreground capacity available for short MCP calls.
 use crate::{
     commands::{CommandRequest, admitted, terminate},
     config::Config,
@@ -43,6 +43,7 @@ struct Buffer {
     total: u64,
     truncated: bool,
 }
+
 impl Buffer {
     fn new() -> Self {
         Self {
@@ -101,9 +102,38 @@ struct ProcessEntry {
     started: Instant,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum SlotKind {
+    Foreground,
+    Background,
+}
+
+struct EntryRecord {
+    process: Arc<ProcessEntry>,
+    slot: Option<SlotKind>,
+}
+
+struct TableState {
+    entries: HashMap<ProcessId, EntryRecord>,
+    next: u64,
+    running_total: usize,
+    running_background: usize,
+}
+
 enum InputMode {
     Closed,
     Piped,
+}
+
+enum Admission {
+    Foreground,
+    Background,
+}
+
+enum Promotion {
+    Promoted,
+    Completed,
+    Full,
 }
 
 struct SpawnedProcess {
@@ -113,25 +143,58 @@ struct SpawnedProcess {
 }
 
 pub struct ProcessTable {
-    entries: Mutex<HashMap<ProcessId, Arc<ProcessEntry>>>,
-    next: Mutex<u64>,
+    state: Arc<Mutex<TableState>>,
 }
 
 impl ProcessTable {
     pub fn new() -> Self {
         Self {
-            entries: Mutex::new(HashMap::new()),
-            next: Mutex::new(1),
+            state: Arc::new(Mutex::new(TableState {
+                entries: HashMap::new(),
+                next: 1,
+                running_total: 0,
+                running_background: 0,
+            })),
         }
     }
 
+    fn background_limit(config: &Config) -> usize {
+        config
+            .limits
+            .max_running_processes
+            .saturating_sub(config.limits.foreground_process_reserve)
+    }
+
     fn get(&self, id: u64) -> Result<Arc<ProcessEntry>, Fault> {
-        self.entries
+        self.state
             .lock()
             .unwrap()
+            .entries
             .get(&ProcessId(id))
-            .cloned()
+            .map(|record| record.process.clone())
             .ok_or_else(|| Fault::new("PROCESS_NOT_FOUND", "process ID is unknown or was evicted"))
+    }
+
+    fn release_slot_locked(state: &mut TableState, id: ProcessId) {
+        let slot = state.entries.get(&id).and_then(|record| record.slot);
+        match slot {
+            Some(SlotKind::Foreground) => {
+                state.running_total = state.running_total.saturating_sub(1);
+            }
+            Some(SlotKind::Background) => {
+                state.running_total = state.running_total.saturating_sub(1);
+                state.running_background = state.running_background.saturating_sub(1);
+            }
+            None => return,
+        }
+        if let Some(record) = state.entries.get_mut(&id) {
+            record.slot = None;
+        }
+    }
+
+    fn remove_entry_locked(state: &mut TableState, id: ProcessId) {
+        Self::release_slot_locked(state, id);
+        state.entries.remove(&id);
     }
 
     fn insert_entry(
@@ -140,6 +203,7 @@ impl ProcessTable {
         command: String,
         stop_tx: oneshot::Sender<()>,
         status_rx: watch::Receiver<Status>,
+        admission: Admission,
     ) -> Result<(ProcessId, Arc<ProcessEntry>), Fault> {
         let entry = Arc::new(ProcessEntry {
             command,
@@ -150,27 +214,52 @@ impl ProcessTable {
             status: status_rx,
             started: Instant::now(),
         });
-        let mut entries = self.entries.lock().unwrap();
 
-        if entries.len() >= config.limits.max_running_processes
-            && let Some(oldest) = entries
+        let mut state = self.state.lock().unwrap();
+        if state.running_total >= config.limits.max_running_processes {
+            return Err(Fault::new("PROCESS_LIMIT", "process capacity is full"));
+        }
+        if matches!(admission, Admission::Background)
+            && state.running_background >= Self::background_limit(config)
+        {
+            return Err(Fault::new(
+                "PROCESS_LIMIT",
+                "background process capacity is full",
+            ));
+        }
+
+        if state.entries.len() >= config.limits.max_running_processes
+            && let Some(oldest) = state
+                .entries
                 .iter()
-                .filter(|(_, e)| !e.status.borrow().running)
-                .min_by_key(|(_, e)| e.started)
+                .filter(|(_, record)| record.slot.is_none())
+                .min_by_key(|(_, record)| record.process.started)
                 .map(|(id, _)| *id)
         {
-            entries.remove(&oldest);
-        }
-        if entries.len() >= config.limits.max_running_processes {
-            return Err(Fault::new("PROCESS_LIMIT", "process table is full"));
+            state.entries.remove(&oldest);
         }
 
-        let mut next = self.next.lock().unwrap();
-        let id = ProcessId(*next);
-        *next = next
+        let id = ProcessId(state.next);
+        state.next = state
+            .next
             .checked_add(1)
             .ok_or_else(|| Fault::new("PROCESS_LIMIT", "process IDs exhausted"))?;
-        entries.insert(id, entry.clone());
+
+        let slot = match admission {
+            Admission::Foreground => SlotKind::Foreground,
+            Admission::Background => SlotKind::Background,
+        };
+        state.running_total += 1;
+        if slot == SlotKind::Background {
+            state.running_background += 1;
+        }
+        state.entries.insert(
+            id,
+            EntryRecord {
+                process: entry.clone(),
+                slot: Some(slot),
+            },
+        );
         Ok((id, entry))
     }
 
@@ -180,6 +269,7 @@ impl ProcessTable {
         request: CommandRequest,
         default_timeout_ms: u64,
         input_mode: InputMode,
+        admission: Admission,
     ) -> Result<SpawnedProcess, Fault> {
         let command_name = request.command.clone();
         let (mut command, timeout_ms) = admitted(&config, &request, default_timeout_ms)?;
@@ -195,12 +285,14 @@ impl ProcessTable {
             stopped: false,
             duration_ms: None,
         });
-        let (id, entry) = self.insert_entry(&config, command_name, stop_tx, status_rx)?;
+        let (id, entry) =
+            self.insert_entry(&config, command_name, stop_tx, status_rx, admission)?;
 
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
-                self.entries.lock().unwrap().remove(&id);
+                let mut state = self.state.lock().unwrap();
+                Self::remove_entry_locked(&mut state, id);
                 return Err(Fault::with(
                     "SPAWN_ERROR",
                     "failed to spawn process",
@@ -210,7 +302,8 @@ impl ProcessTable {
         };
         let Some(pid) = child.id() else {
             let _ = child.start_kill();
-            self.entries.lock().unwrap().remove(&id);
+            let mut state = self.state.lock().unwrap();
+            Self::remove_entry_locked(&mut state, id);
             return Err(Fault::new("SPAWN_ERROR", "spawned child has no process ID"));
         };
 
@@ -237,6 +330,7 @@ impl ProcessTable {
         ));
 
         let supervisor_entry = entry.clone();
+        let state = self.state.clone();
         tokio::spawn(async move {
             let deadline = TokioInstant::now() + Duration::from_millis(timeout_ms);
             let mut stop_rx = stop_rx;
@@ -301,6 +395,9 @@ impl ProcessTable {
             *supervisor_entry.stdin.lock().await = None;
             status.duration_ms = Some(supervisor_entry.started.elapsed().as_millis() as u64);
             status_tx.send_replace(status);
+
+            let mut state = state.lock().unwrap();
+            ProcessTable::release_slot_locked(&mut state, id);
         });
 
         Ok(SpawnedProcess {
@@ -308,6 +405,60 @@ impl ProcessTable {
             entry,
             timeout_ms,
         })
+    }
+
+    fn promote_to_background(&self, id: ProcessId, config: &Config) -> Result<Promotion, Fault> {
+        let mut state = self.state.lock().unwrap();
+        let record = state.entries.get(&id).ok_or_else(|| {
+            Fault::new("PROCESS_NOT_FOUND", "process ID is unknown or was evicted")
+        })?;
+        let slot = record.slot;
+        let running = record.process.status.borrow().running;
+
+        if !running || slot.is_none() {
+            Self::release_slot_locked(&mut state, id);
+            return Ok(Promotion::Completed);
+        }
+        if slot == Some(SlotKind::Background) {
+            return Ok(Promotion::Promoted);
+        }
+        if state.running_background >= Self::background_limit(config) {
+            return Ok(Promotion::Full);
+        }
+
+        state.running_background += 1;
+        state
+            .entries
+            .get_mut(&id)
+            .expect("process entry exists")
+            .slot = Some(SlotKind::Background);
+        Ok(Promotion::Promoted)
+    }
+
+    fn request_stop(&self, id: ProcessId) {
+        let entry = self
+            .state
+            .lock()
+            .unwrap()
+            .entries
+            .get(&id)
+            .map(|record| record.process.clone());
+        if let Some(entry) = entry
+            && let Some(sender) = entry.stop.lock().unwrap().take()
+        {
+            let _ = sender.send(());
+        }
+    }
+
+    fn remove_completed(&self, id: ProcessId) {
+        let mut state = self.state.lock().unwrap();
+        if state
+            .entries
+            .get(&id)
+            .is_some_and(|record| record.slot.is_none())
+        {
+            state.entries.remove(&id);
+        }
     }
 
     fn run_value(
@@ -346,6 +497,32 @@ impl ProcessTable {
         }))
     }
 
+    fn completed_run_value(
+        &self,
+        spawned: &SpawnedProcess,
+        config: &Config,
+    ) -> Result<serde_json::Value, Fault> {
+        let final_status = spawned.entry.status.borrow().clone();
+        let value = Self::run_value(&spawned.entry, spawned.id, "completed", false, config)?;
+        self.remove_completed(spawned.id);
+
+        if final_status.timed_out {
+            return Err(Fault::with(
+                "COMMAND_TIMEOUT",
+                "command timed out",
+                json!({
+                    "exit_code": value["exit_code"],
+                    "stdout": value["stdout"],
+                    "stderr": value["stderr"],
+                    "duration_ms": value["duration_ms"],
+                    "timed_out": true,
+                    "truncated": value["truncated"],
+                }),
+            ));
+        }
+        Ok(value)
+    }
+
     pub async fn run(
         &self,
         config: Arc<Config>,
@@ -357,6 +534,7 @@ impl ProcessTable {
             request,
             config.limits.default_timeout_ms,
             InputMode::Closed,
+            Admission::Foreground,
         )?;
 
         let wait_ms = if spawned.timeout_ms <= foreground_wait_ms {
@@ -376,29 +554,27 @@ impl ProcessTable {
             .await;
         }
 
-        let final_status = status.borrow().clone();
-        if final_status.running {
-            return Self::run_value(&spawned.entry, spawned.id, "running", true, &config);
+        if !status.borrow().running {
+            return self.completed_run_value(&spawned, &config);
         }
 
-        let value = Self::run_value(&spawned.entry, spawned.id, "completed", false, &config)?;
-        self.entries.lock().unwrap().remove(&spawned.id);
-
-        if final_status.timed_out {
-            return Err(Fault::with(
-                "COMMAND_TIMEOUT",
-                "command timed out",
-                json!({
-                    "exit_code": value["exit_code"],
-                    "stdout": value["stdout"],
-                    "stderr": value["stderr"],
-                    "duration_ms": value["duration_ms"],
-                    "timed_out": true,
-                    "truncated": value["truncated"],
-                }),
-            ));
+        match self.promote_to_background(spawned.id, &config)? {
+            Promotion::Promoted => {
+                Self::run_value(&spawned.entry, spawned.id, "running", true, &config)
+            }
+            Promotion::Completed => self.completed_run_value(&spawned, &config),
+            Promotion::Full => {
+                if !spawned.entry.status.borrow().running {
+                    return self.completed_run_value(&spawned, &config);
+                }
+                self.request_stop(spawned.id);
+                Err(Fault::with(
+                    "PROCESS_LIMIT",
+                    "background process capacity is full",
+                    json!({"foreground_wait_ms": foreground_wait_ms}),
+                ))
+            }
         }
-        Ok(value)
     }
 
     pub fn start(
@@ -411,29 +587,35 @@ impl ProcessTable {
             request,
             config.limits.max_timeout_ms,
             InputMode::Piped,
+            Admission::Background,
         )?;
         Ok(json!({"process_id": spawned.id.0}))
     }
 
     pub fn list(&self) -> serde_json::Value {
-        let entries = self.entries.lock().unwrap();
-        let mut rows: Vec<_> = entries
+        let state = self.state.lock().unwrap();
+        let mut rows: Vec<_> = state
+            .entries
             .iter()
-            .map(|(id, entry)| {
-                let status = entry.status.borrow().clone();
+            .map(|(id, record)| {
+                let status = record.process.status.borrow().clone();
                 let duration_ms = status
                     .duration_ms
-                    .unwrap_or_else(|| entry.started.elapsed().as_millis() as u64);
+                    .unwrap_or_else(|| record.process.started.elapsed().as_millis() as u64);
                 json!({
                     "process_id": id.0,
-                    "command": entry.command,
+                    "command": record.process.command,
                     "status": status,
                     "duration_ms": duration_ms,
                 })
             })
             .collect();
         rows.sort_by_key(|row| row["process_id"].as_u64().unwrap_or(0));
-        json!({"processes": rows})
+        json!({
+            "processes": rows,
+            "running_total": state.running_total,
+            "running_background": state.running_background,
+        })
     }
 
     pub fn read(
@@ -507,7 +689,14 @@ impl ProcessTable {
     }
 
     pub async fn shutdown(&self) {
-        let entries: Vec<_> = self.entries.lock().unwrap().values().cloned().collect();
+        let entries: Vec<_> = self
+            .state
+            .lock()
+            .unwrap()
+            .entries
+            .values()
+            .map(|record| record.process.clone())
+            .collect();
         for entry in &entries {
             if let Some(sender) = entry.stop.lock().unwrap().take() {
                 let _ = sender.send(());
