@@ -2,12 +2,7 @@
 //!
 //! Handlers delegate command, filesystem, and process policy to their modules
 //! and convert the results into MCP responses.
-use crate::{
-    commands::{self, CommandRequest},
-    config::Config,
-    filesystem,
-    process::ProcessTable,
-};
+use crate::{commands::CommandRequest, config::Config, filesystem, process::ProcessTable};
 use rmcp::{
     ServiceExt,
     handler::server::router::tool::ToolRouter,
@@ -125,21 +120,23 @@ impl Rivet {
         result(Ok(json!({"commands": commands})))
     }
 
-    #[tool(description = "Run a registered command and collect bounded output")]
+    #[tool(
+        description = "Run a registered command briefly; return a managed process handle if it is still running"
+    )]
     async fn run_command(&self, Parameters(request): Parameters<CommandRequest>) -> CallToolResult {
-        result(
-            commands::run(self.config.clone(), request)
-                .await
-                .map(|value| json!(value)),
-        )
+        result(self.processes.run(self.config.clone(), request).await)
     }
 
     #[tool(description = "Start a registered long-running process")]
-    async fn start_process(
-        &self,
-        Parameters(request): Parameters<CommandRequest>,
-    ) -> CallToolResult {
-        result(self.processes.start(self.config.clone(), request).await)
+    fn start_process(&self, Parameters(request): Parameters<CommandRequest>) -> CallToolResult {
+        result(self.processes.start(self.config.clone(), request))
+    }
+
+    #[tool(
+        description = "List retained managed processes for recovery after an interrupted request"
+    )]
+    fn list_processes(&self) -> CallToolResult {
+        result(Ok(self.processes.list()))
     }
 
     #[tool(description = "Read bounded process stdout and stderr from byte offsets")]
