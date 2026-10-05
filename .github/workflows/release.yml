@@ -43,20 +43,7 @@ jobs:
             sha="$(jq -r '.object.sha' <<< "$tag_json")"
           fi
 
-          commit="$(gh api "repos/$GH_REPO/commits/$sha")"
-          source_sha="$(jq -r '.parents[1].sha // empty' <<< "$commit")"
-          if [[ -z "$source_sha" ]]; then
-            source_sha="$sha"
-          fi
-
-          release_tree="$(gh api "repos/$GH_REPO/git/commits/$sha" --jq .tree.sha)"
-          source_tree="$(gh api "repos/$GH_REPO/git/commits/$source_sha" --jq .tree.sha)"
-          if [[ "$release_tree" != "$source_tree" ]]; then
-            echo "::error::Tested source tree $source_tree does not match release tree $release_tree."
-            exit 1
-          fi
-
-          runs="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$source_sha&per_page=20")"
+          runs="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$sha&event=push&per_page=20")"
           run_id="$(jq -r '
             .workflow_runs
             | map(select(.status == "completed" and .conclusion == "success"))
@@ -66,7 +53,7 @@ jobs:
           ' <<< "$runs")"
 
           if [[ -z "$run_id" ]]; then
-            echo "::error::No successful CI run found for tested source commit $source_sha."
+            echo "::error::No successful post-merge CI run found for release commit $sha."
             exit 1
           fi
 
@@ -77,9 +64,8 @@ jobs:
           fi
 
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          echo "Using tested CI run $run_id for $source_sha (release $sha)"
+          echo "Using post-merge CI run $run_id for release commit $sha"
 
       - name: Download tested release assets
         env:
