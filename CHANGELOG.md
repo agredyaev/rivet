@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.2.12](https://github.com/agredyaev/rivet/compare/v0.2.11...v0.2.12) (2026-10-05)
+
+
+### Bug Fixes
+
+* make command execution mode explicit ([c3038f3](https://github.com/agredyaev/rivet/commit/c3038f335c0d7081ea7afb413e5ec29c0c653000))
+* make command execution mode explicit ([eb0282e](https://github.com/agredyaev/rivet/commit/eb0282e384456ac0fa10477aa8d4e173e4133d2b))
+
 ## [0.2.11](https://github.com/agredyaev/rivet/compare/v0.2.10...v0.2.11) (2026-10-04)
 
 
