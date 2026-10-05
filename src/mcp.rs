@@ -129,10 +129,10 @@ impl Rivet {
     }
 
     #[tool(
-        description = "Submit a registered command and return a managed process handle immediately"
+        description = "Run a registered command synchronously and return its final bounded output"
     )]
-    fn run_command(&self, Parameters(request): Parameters<CommandRequest>) -> CallToolResult {
-        result(self.processes.run(self.config.clone(), request))
+    async fn run_command(&self, Parameters(request): Parameters<CommandRequest>) -> CallToolResult {
+        result(self.processes.run(self.config.clone(), request).await)
     }
 
     #[tool(description = "Start a registered long-running process")]

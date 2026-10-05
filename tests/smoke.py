@@ -43,28 +43,10 @@ def call(proc, number, name, arguments, error=None):
     return result["structuredContent"]
 
 
-_wait_call_id = 900000
-
 def run_to_completion(proc, number, arguments):
-    global _wait_call_id
-    submitted = call(proc, number, "run_command", arguments)
-    assert submitted["state"] == "submitted" and submitted["process_id"], submitted
-    process_id = submitted["process_id"]
-    for _ in range(120):
-        _wait_call_id += 1
-        result = call(proc, _wait_call_id, "read_process_output", {"process_id": process_id, "limit": 64})
-        if not result["status"]["running"]:
-            return {
-                "process_id": process_id,
-                "exit_code": result["status"]["exit_code"],
-                "timed_out": result["status"]["timed_out"],
-                "stopped": result["status"]["stopped"],
-                "stdout": result["stdout"]["text"],
-                "stderr": result["stderr"]["text"],
-                "truncated": result["stdout"]["truncated"] or result["stderr"]["truncated"],
-            }
-        time.sleep(.05)
-    raise AssertionError("submitted run_command did not complete")
+    completed = call(proc, number, "run_command", arguments)
+    assert completed["state"] == "completed", completed
+    return completed
 
 
 def assert_server_info(result):
@@ -193,12 +175,10 @@ allow_override = ["RIVET_TEST"]
             output = run_to_completion(proc, 22, {"command": "sh", "args": ["-c", "printf '%0100d' 0; printf '%0100d' 0 >&2"], "cwd": tmp})
             assert output["truncated"] and len(output["stdout"]) == len(output["stderr"]) == 64
             assert run_to_completion(proc, 220, {"command": "sh", "args": ["-c", "exit 7"], "cwd": tmp})["exit_code"] == 7
-            timeout = run_to_completion(proc, 23, {"command": "sh", "args": ["-c", "echo ready; sleep 3"], "cwd": tmp, "timeout_ms": 50})
-            assert timeout["timed_out"] and "ready" in timeout["stdout"]
-            assert run_to_completion(proc, 231, {"command": "sh", "args": ["-c", "sleep 3 &"], "cwd": tmp, "timeout_ms": 50})["timed_out"]
-            detached = call(proc, 232, "run_command", {"command": "sh", "args": ["-c", "sleep .4; printf detached"], "cwd": tmp, "timeout_ms": 1000})
-            assert detached["state"] == "submitted" and detached["process_id"]
-            detached_id = detached["process_id"]
+            timeout = call(proc, 23, "run_command", {"command": "sh", "args": ["-c", "echo ready; sleep 3"], "cwd": tmp, "timeout_ms": 50}, "COMMAND_TIMEOUT")
+            assert timeout["details"]["timed_out"] and "ready" in timeout["details"]["stdout"]
+            call(proc, 231, "run_command", {"command": "sh", "args": ["-c", "sleep 3 &"], "cwd": tmp, "timeout_ms": 50}, "COMMAND_TIMEOUT")
+            detached_id = call(proc, 232, "start_process", {"command": "sh", "args": ["-c", "sleep .4; printf detached"], "cwd": tmp, "timeout_ms": 1000})["process_id"]
             listed = call(proc, 233, "list_processes", {})["processes"]
             assert any(row["process_id"] == detached_id and row["command"] == "sh" for row in listed)
             for _ in range(30):
