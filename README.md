@@ -105,3 +105,11 @@ cargo build --locked --release
 ```
 
 Run `rivet --help`, `rivet serve --help`, or `rivet session --help` for CLI details.
+
+## Security
+
+See [SECURITY.md](SECURITY.md) for supported versions and vulnerability reporting.
+
+## License
+
+Licensed under the [MIT License](LICENSE).
