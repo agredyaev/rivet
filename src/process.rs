@@ -361,7 +361,7 @@ impl ProcessTable {
         Ok(id)
     }
 
-    pub fn run(
+    pub async fn run(
         &self,
         config: Arc<Config>,
         request: CommandRequest,
@@ -372,7 +372,62 @@ impl ProcessTable {
             config.limits.default_timeout_ms,
             InputMode::Closed,
         )?;
-        Ok(json!({"state": "submitted", "process_id": id.0}))
+        let entry = self.get(id.0)?;
+        let mut status = entry.status.clone();
+
+        while status.borrow().running {
+            status
+                .changed()
+                .await
+                .map_err(|_| Fault::new("IO_ERROR", "process watcher stopped"))?;
+        }
+
+        let final_status = status.borrow().clone();
+        let stdout = entry
+            .stdout
+            .lock()
+            .unwrap()
+            .slice(0, config.limits.max_stdout_bytes)?;
+        let stderr = entry
+            .stderr
+            .lock()
+            .unwrap()
+            .slice(0, config.limits.max_stderr_bytes)?;
+
+        {
+            let mut state = self.state.lock().unwrap();
+            Self::remove_entry_locked(&mut state, id);
+        }
+
+        let value = json!({
+            "state": "completed",
+            "exit_code": final_status.exit_code,
+            "stdout": stdout.text,
+            "stderr": stderr.text,
+            "stdout_offset": stdout.next_offset,
+            "stderr_offset": stderr.next_offset,
+            "duration_ms": final_status.duration_ms,
+            "timed_out": final_status.timed_out,
+            "stopped": final_status.stopped,
+            "truncated": stdout.truncated || stderr.truncated,
+        });
+
+        if final_status.timed_out {
+            return Err(Fault::with(
+                "COMMAND_TIMEOUT",
+                "command timed out",
+                json!({
+                    "exit_code": value["exit_code"],
+                    "stdout": value["stdout"],
+                    "stderr": value["stderr"],
+                    "duration_ms": value["duration_ms"],
+                    "timed_out": true,
+                    "truncated": value["truncated"],
+                }),
+            ));
+        }
+
+        Ok(value)
     }
 
     pub fn start(

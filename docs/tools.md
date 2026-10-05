@@ -6,8 +6,8 @@ Rivet exposes these tools over MCP stdio. Paths and command working directories 
 | --- | --- |
 | `list_roots` | Return effective allowed roots. |
 | `list_commands` | Return registered commands and their argument policy. |
-| `run_command` | Submit a registered command and return its managed process handle immediately. |
-| `start_process` | Start a registered long-running command and return its process ID. |
+| `run_command` | Run a registered command synchronously and return its final bounded output. |
+| `start_process` | Start a registered command asynchronously and return its process ID immediately. |
 | `list_processes` | List retained managed processes for recovery after an interrupted request. |
 | `list_ready_processes` | List completed processes by completion sequence and optionally include bounded stdout/stderr. |
 | `read_process_output` | Read captured stdout and stderr from byte offsets. |
@@ -22,7 +22,7 @@ Rivet exposes these tools over MCP stdio. Paths and command working directories 
 
 `run_command` and `start_process` accept `command`, `args`, `cwd`, optional `timeout_ms`, and optional environment overrides in `env`. The command name must be registered. Restricted commands authorize the first argument using `allowed_subcommands`. A missing timeout uses `default_timeout_ms` for `run_command` and `max_timeout_ms` for `start_process`.
 
-`run_command` does not wait for process completion. It returns `state = "submitted"` and `process_id` after spawn and supervisor handoff. Completion is published by the supervisor when the operating system reports process exit.
+`run_command` waits for the operating system to report process completion and returns `state = "completed"` with bounded stdout and stderr in the same MCP response. It uses no foreground wait window, polling loop, or command-duration heuristic. Use `start_process` before execution when the command must continue independently of the MCP request.
 
 ## Processes
 
