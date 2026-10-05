@@ -2,6 +2,7 @@
 name = "rivet"
 version = "0.2.11"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 cap-std = "=4.0.3"
