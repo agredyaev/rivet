@@ -165,6 +165,7 @@ allow_override = ["RIVET_TEST"]
                 **base,
                 "command": "sh",
                 "args": ["-c", "sleep 1; printf slow"],
+                "timeout_ms": 3000,
                 "wait_ms": 25,
                 "output_limit": 64,
             })
