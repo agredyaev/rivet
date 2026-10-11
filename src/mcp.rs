@@ -239,13 +239,16 @@ impl Rivet {
                 "wait_ms must not exceed 5000",
             )));
         }
-        let output_limit = request.output_limit.unwrap_or(64 * 1024);
-        if output_limit == 0 || output_limit > max_output {
-            return result(Err(Fault::new(
-                "INVALID_REQUEST",
-                "output_limit is outside configured bounds",
-            )));
-        }
+        let output_limit = match request.output_limit {
+            Some(value) if value == 0 || value > max_output => {
+                return result(Err(Fault::new(
+                    "INVALID_REQUEST",
+                    "output_limit is outside configured bounds",
+                )));
+            }
+            Some(value) => value,
+            None => (64 * 1024).min(max_output),
+        };
         result(
             self.processes
                 .submit(
@@ -283,13 +286,16 @@ impl Rivet {
                 "wait_ms must not exceed 5000",
             )));
         }
-        let output_limit = request.output_limit.unwrap_or(64 * 1024);
-        if output_limit == 0 || output_limit > max_output {
-            return result(Err(Fault::new(
-                "INVALID_REQUEST",
-                "output_limit is outside configured bounds",
-            )));
-        }
+        let output_limit = match request.output_limit {
+            Some(value) if value == 0 || value > max_output => {
+                return result(Err(Fault::new(
+                    "INVALID_REQUEST",
+                    "output_limit is outside configured bounds",
+                )));
+            }
+            Some(value) => value,
+            None => (64 * 1024).min(max_output),
+        };
         let count = request.commands.len();
         let mut tasks = tokio::task::JoinSet::new();
         for (index, command) in request.commands.into_iter().enumerate() {
