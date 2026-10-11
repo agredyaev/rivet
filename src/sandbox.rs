@@ -283,6 +283,139 @@ fn hidden_linux_roots() -> Vec<PathBuf> {
 }
 
 #[cfg(target_os = "linux")]
+fn linux_network_filter(command: &mut Command) -> Result<(), String> {
+    use std::{
+        io::Write,
+        os::{
+            fd::{AsRawFd, FromRawFd, OwnedFd},
+            unix::process::CommandExt,
+        },
+    };
+
+    #[cfg(target_arch = "x86_64")]
+    const AUDIT_ARCH: u32 = 0xc000_003e;
+    #[cfg(target_arch = "aarch64")]
+    const AUDIT_ARCH: u32 = 0xc000_00b7;
+    #[cfg(not(any(target_arch = "x86_64", target_arch = "aarch64")))]
+    return Err("Linux network sandbox supports x86_64 and aarch64 only".into());
+
+    const BPF_LD_W_ABS: u16 = 0x20;
+    const BPF_JMP_JEQ_K: u16 = 0x15;
+    const BPF_RET_K: u16 = 0x06;
+    const SECCOMP_RET_KILL_PROCESS: u32 = 0x8000_0000;
+    const SECCOMP_RET_ERRNO: u32 = 0x0005_0000;
+    const SECCOMP_RET_ALLOW: u32 = 0x7fff_0000;
+
+    let filters = [
+        libc::sock_filter {
+            code: BPF_LD_W_ABS,
+            jt: 0,
+            jf: 0,
+            k: 4,
+        },
+        libc::sock_filter {
+            code: BPF_JMP_JEQ_K,
+            jt: 1,
+            jf: 0,
+            k: AUDIT_ARCH,
+        },
+        libc::sock_filter {
+            code: BPF_RET_K,
+            jt: 0,
+            jf: 0,
+            k: SECCOMP_RET_KILL_PROCESS,
+        },
+        libc::sock_filter {
+            code: BPF_LD_W_ABS,
+            jt: 0,
+            jf: 0,
+            k: 0,
+        },
+        libc::sock_filter {
+            code: BPF_JMP_JEQ_K,
+            jt: 2,
+            jf: 0,
+            k: libc::SYS_socket as u32,
+        },
+        libc::sock_filter {
+            code: BPF_JMP_JEQ_K,
+            jt: 1,
+            jf: 0,
+            k: libc::SYS_socketpair as u32,
+        },
+        libc::sock_filter {
+            code: BPF_RET_K,
+            jt: 0,
+            jf: 0,
+            k: SECCOMP_RET_ALLOW,
+        },
+        libc::sock_filter {
+            code: BPF_LD_W_ABS,
+            jt: 0,
+            jf: 0,
+            k: 16,
+        },
+        libc::sock_filter {
+            code: BPF_JMP_JEQ_K,
+            jt: 0,
+            jf: 1,
+            k: libc::AF_UNIX as u32,
+        },
+        libc::sock_filter {
+            code: BPF_RET_K,
+            jt: 0,
+            jf: 0,
+            k: SECCOMP_RET_ALLOW,
+        },
+        libc::sock_filter {
+            code: BPF_RET_K,
+            jt: 0,
+            jf: 0,
+            k: SECCOMP_RET_ERRNO | libc::EPERM as u32,
+        },
+    ];
+
+    let mut fds = [0; 2];
+    // SAFETY: fds points to two writable integers for pipe2 to initialize.
+    if unsafe { libc::pipe2(fds.as_mut_ptr(), libc::O_CLOEXEC) } != 0 {
+        return Err(format!(
+            "failed to create seccomp pipe: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: pipe2 initialized both descriptors and transfers ownership here.
+    let read_fd = unsafe { OwnedFd::from_raw_fd(fds[0]) };
+    // SAFETY: pipe2 initialized both descriptors and transfers ownership here.
+    let mut write_fd = unsafe { std::fs::File::from_raw_fd(fds[1]) };
+    // SAFETY: filters is a contiguous array of plain C sock_filter structs.
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            filters.as_ptr().cast::<u8>(),
+            std::mem::size_of_val(&filters),
+        )
+    };
+    write_fd
+        .write_all(bytes)
+        .map_err(|error| format!("failed to write seccomp filter: {error}"))?;
+    drop(write_fd);
+
+    let fd = read_fd.as_raw_fd();
+    command.arg("--seccomp").arg(fd.to_string());
+    // Keep the filter FD alive until spawn and clear CLOEXEC only in the child
+    // so bwrap can read it during startup.
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fcntl(fd, libc::F_SETFD, 0) == -1 {
+                return Err(std::io::Error::last_os_error());
+            }
+            let _keep_alive = &read_fd;
+            Ok(())
+        });
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
 fn linux_command(
     executable: &Path,
     args: &[String],
@@ -313,7 +446,7 @@ fn linux_command(
         "/dev",
     ]);
     if !network {
-        command.arg("--unshare-net");
+        linux_network_filter(&mut command)?;
     }
 
     for path in hidden_linux_roots() {
