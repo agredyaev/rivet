@@ -243,20 +243,38 @@ impl Rivet {
             .max(self.config.limits.max_stderr_bytes);
         let wait_ms = request.wait_ms.unwrap_or(250).min(5_000);
         let output_limit = request.output_limit.unwrap_or(64 * 1024).min(max_output);
-        let futures = request.commands.into_iter().map(|command| {
-            self.processes
-                .submit(self.config.clone(), command, wait_ms, output_limit)
-        });
-        let results = futures::future::join_all(futures).await;
-        let mut rows = Vec::with_capacity(results.len());
-        for value in results {
-            match value {
-                Ok(value) => rows.push(json!({"ok": true, "result": value})),
-                Err(error) => rows.push(json!({
+        let count = request.commands.len();
+        let mut tasks = tokio::task::JoinSet::new();
+        for (index, command) in request.commands.into_iter().enumerate() {
+            let processes = self.processes.clone();
+            let config = self.config.clone();
+            tasks.spawn(async move {
+                (
+                    index,
+                    processes
+                        .submit(config, command, wait_ms, output_limit)
+                        .await,
+                )
+            });
+        }
+        let mut rows = vec![Value::Null; count];
+        while let Some(joined) = tasks.join_next().await {
+            let (index, value) = match joined {
+                Ok(value) => value,
+                Err(_) => {
+                    return result(Err(Fault::new(
+                        "IO_ERROR",
+                        "command worker failed",
+                    )));
+                }
+            };
+            rows[index] = match value {
+                Ok(value) => json!({"ok": true, "result": value}),
+                Err(error) => json!({
                     "ok": false,
                     "error": serde_json::to_value(error).expect("serializable error")
-                })),
-            }
+                }),
+            };
         }
         result(Ok(json!({"results": rows})))
     }
