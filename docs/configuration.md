@@ -27,7 +27,7 @@ default_timeout_ms = 120000
 max_timeout_ms = 1800000
 ```
 
-`max_running_processes` limits live managed processes. Completed retained entries do not consume live-process capacity. `max_file_read_bytes` cannot exceed 64 MiB. `default_timeout_ms` cannot exceed `max_timeout_ms`; the maximum timeout cannot exceed 4,294,967,295 ms. `run_command` submits a managed process and returns immediately; its missing `timeout_ms` uses `default_timeout_ms`. `start_process` keeps stdin available and uses `max_timeout_ms` when no timeout is supplied.
+`max_running_processes` limits live managed processes. Completed retained entries do not consume live-process capacity. `max_file_read_bytes` cannot exceed 64 MiB. `default_timeout_ms` cannot exceed `max_timeout_ms`; the maximum timeout cannot exceed 4,294,967,295 ms. `run_command` uses `default_timeout_ms` for the child and waits up to 250 ms by default to return fast results inline. `start_process` keeps stdin available and uses `max_timeout_ms` when no timeout is supplied.
 
 ## Environment
 
