@@ -128,11 +128,29 @@ static ROUTER: LazyLock<ToolRouter<Rivet>> = LazyLock::new(Rivet::tool_router);
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
+struct RunCommandRequest {
+    #[serde(flatten)]
+    command: CommandRequest,
+    wait_ms: Option<u64>,
+    output_limit: Option<usize>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct RunCommandsRequest {
+    commands: Vec<CommandRequest>,
+    wait_ms: Option<u64>,
+    output_limit: Option<usize>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
 struct ProcessOutputRequest {
     process_id: u64,
     stdout_offset: Option<u64>,
     stderr_offset: Option<u64>,
     limit: Option<usize>,
+    wait_ms: Option<u64>,
 }
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -185,10 +203,62 @@ impl Rivet {
     }
 
     #[tool(
-        description = "Submit a registered command and return a managed process handle immediately"
+        description = "Run a registered command. Fast commands complete inline; slower commands return a managed process handle."
     )]
-    fn run_command(&self, Parameters(request): Parameters<CommandRequest>) -> CallToolResult {
-        result(self.processes.submit(self.config.clone(), request))
+    async fn run_command(
+        &self,
+        Parameters(request): Parameters<RunCommandRequest>,
+    ) -> CallToolResult {
+        let max_output = self
+            .config
+            .limits
+            .max_stdout_bytes
+            .max(self.config.limits.max_stderr_bytes);
+        let wait_ms = request.wait_ms.unwrap_or(250).min(5_000);
+        let output_limit = request.output_limit.unwrap_or(64 * 1024).min(max_output);
+        result(
+            self.processes
+                .submit(self.config.clone(), request.command, wait_ms, output_limit)
+                .await,
+        )
+    }
+
+    #[tool(
+        description = "Run up to 8 independent registered commands concurrently inside one MCP request."
+    )]
+    async fn run_commands(
+        &self,
+        Parameters(request): Parameters<RunCommandsRequest>,
+    ) -> CallToolResult {
+        if request.commands.is_empty() || request.commands.len() > 8 {
+            return result(Err(Fault::new(
+                "INVALID_REQUEST",
+                "commands must contain between 1 and 8 entries",
+            )));
+        }
+        let max_output = self
+            .config
+            .limits
+            .max_stdout_bytes
+            .max(self.config.limits.max_stderr_bytes);
+        let wait_ms = request.wait_ms.unwrap_or(250).min(5_000);
+        let output_limit = request.output_limit.unwrap_or(64 * 1024).min(max_output);
+        let futures = request.commands.into_iter().map(|command| {
+            self.processes
+                .submit(self.config.clone(), command, wait_ms, output_limit)
+        });
+        let results = futures::future::join_all(futures).await;
+        let mut rows = Vec::with_capacity(results.len());
+        for value in results {
+            match value {
+                Ok(value) => rows.push(json!({"ok": true, "result": value})),
+                Err(error) => rows.push(json!({
+                    "ok": false,
+                    "error": serde_json::to_value(error).expect("serializable error")
+                })),
+            }
+        }
+        result(Ok(json!({"results": rows})))
     }
 
     #[tool(description = "Start a registered long-running process")]
@@ -228,8 +298,10 @@ impl Rivet {
         )
     }
 
-    #[tool(description = "Read bounded process stdout and stderr from byte offsets")]
-    fn read_process_output(
+    #[tool(
+        description = "Read bounded process output, optionally waiting for new output or completion."
+    )]
+    async fn read_process_output(
         &self,
         Parameters(request): Parameters<ProcessOutputRequest>,
     ) -> CallToolResult {
@@ -238,13 +310,19 @@ impl Rivet {
             .limits
             .max_stdout_bytes
             .max(self.config.limits.max_stderr_bytes);
-        result(self.processes.read(
-            request.process_id,
-            request.stdout_offset.unwrap_or(0),
-            request.stderr_offset.unwrap_or(0),
-            request.limit.unwrap_or(max),
-            max,
-        ))
+        result(
+            self.processes
+                .read_wait(
+                    request.process_id,
+                    request.stdout_offset.unwrap_or(0),
+                    request.stderr_offset.unwrap_or(0),
+                    request.limit.unwrap_or(max),
+                    max,
+                    request.wait_ms.unwrap_or(0),
+                    30_000,
+                )
+                .await,
+        )
     }
 
     #[tool(description = "Send bounded UTF-8 text to process stdin")]
@@ -478,6 +556,7 @@ allow_override = []
         let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
         let tools = value["result"]["tools"].as_array().unwrap();
         assert!(tools.iter().any(|tool| tool["name"] == "run_command"));
+        assert!(tools.iter().any(|tool| tool["name"] == "run_commands"));
         assert!(
             tools
                 .iter()
