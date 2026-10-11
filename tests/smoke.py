@@ -45,25 +45,36 @@ def call(proc, number, name, arguments, error=None):
 
 _wait_call_id = 900000
 
+def normalize_completed(result):
+    return {
+        "process_id": result["process_id"],
+        "exit_code": result["status"]["exit_code"],
+        "timed_out": result["status"]["timed_out"],
+        "stopped": result["status"]["stopped"],
+        "stdout": result["stdout"]["text"],
+        "stderr": result["stderr"]["text"],
+        "truncated": result["stdout"]["truncated"] or result["stderr"]["truncated"],
+    }
+
+
 def run_to_completion(proc, number, arguments):
     global _wait_call_id
     submitted = call(proc, number, "run_command", arguments)
-    assert submitted["state"] == "submitted" and submitted["process_id"], submitted
+    assert submitted["process_id"], submitted
+    if submitted["state"] == "completed":
+        return normalize_completed(submitted)
+    assert submitted["state"] == "submitted", submitted
     process_id = submitted["process_id"]
     for _ in range(120):
         _wait_call_id += 1
-        result = call(proc, _wait_call_id, "read_process_output", {"process_id": process_id, "limit": 64})
+        result = call(
+            proc,
+            _wait_call_id,
+            "read_process_output",
+            {"process_id": process_id, "limit": 64, "wait_ms": 1000},
+        )
         if not result["status"]["running"]:
-            return {
-                "process_id": process_id,
-                "exit_code": result["status"]["exit_code"],
-                "timed_out": result["status"]["timed_out"],
-                "stopped": result["status"]["stopped"],
-                "stdout": result["stdout"]["text"],
-                "stderr": result["stderr"]["text"],
-                "truncated": result["stdout"]["truncated"] or result["stderr"]["truncated"],
-            }
-        time.sleep(.05)
+            return normalize_completed({"process_id": process_id, **result})
     raise AssertionError("submitted run_command did not complete")
 
 
@@ -139,7 +150,7 @@ allow_override = ["RIVET_TEST"]
             proc.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
             proc.stdin.flush()
             tools = send(proc, 2, "tools/list", {})["tools"]
-            assert {tool["name"] for tool in tools} == {"list_roots", "list_commands", "run_command", "start_process", "list_processes", "list_ready_processes", "read_process_output", "send_process_input", "stop_process", "list_directory", "read_file", "write_file", "replace_text"}
+            assert {tool["name"] for tool in tools} == {"list_roots", "list_commands", "run_command", "run_commands", "start_process", "list_processes", "list_ready_processes", "read_process_output", "send_process_input", "stop_process", "list_directory", "read_file", "write_file", "replace_text"}
             assert all(tool["inputSchema"]["type"] == "object" for tool in tools)
             assert call(proc, 102, "list_roots", {})["roots"] == [str(root.resolve())]
             names = call(proc, 3, "list_commands", {})["commands"]
@@ -147,6 +158,36 @@ allow_override = ["RIVET_TEST"]
             base = {"command": "echo", "args": [";", "&&", "|", ">", "$(date)", "`date`"], "cwd": tmp}
             completed = run_to_completion(proc, 4, base)
             assert completed["stdout"] == "; && | > $(date) `date`\n"
+            inline = call(proc, 401, "run_command", {**base, "args": ["inline"], "wait_ms": 1000, "output_limit": 64})
+            assert inline["state"] == "completed" and inline["stdout"]["text"] == "inline\n", inline
+            started_at = time.monotonic()
+            slow = call(proc, 402, "run_command", {
+                **base,
+                "command": "sh",
+                "args": ["-c", "sleep 1; printf slow"],
+                "wait_ms": 25,
+                "output_limit": 64,
+            })
+            assert slow["state"] == "submitted", slow
+            assert time.monotonic() - started_at < .5, slow
+            waited = call(proc, 403, "read_process_output", {
+                "process_id": slow["process_id"],
+                "limit": 64,
+                "wait_ms": 2000,
+            })
+            assert not waited["status"]["running"] and waited["stdout"]["text"] == "slow", waited
+            batch_started = time.monotonic()
+            batch = call(proc, 404, "run_commands", {
+                "commands": [
+                    {**base, "command": "sh", "args": ["-c", f"sleep .15; printf {i}"]}
+                    for i in range(4)
+                ],
+                "wait_ms": 1000,
+                "output_limit": 64,
+            })
+            batch_elapsed = time.monotonic() - batch_started
+            assert batch_elapsed < .55, batch_elapsed
+            assert [row["result"]["stdout"]["text"] for row in batch["results"]] == ["0", "1", "2", "3"], batch
             call(proc, 5, "run_command", {**base, "command": "missing"}, "COMMAND_NOT_FOUND")
             call(proc, 6, "run_command", {**base, "command": "sh", "args": ["-x"]}, "SUBCOMMAND_DENIED")
             call(proc, 7, "run_command", {**base, "cwd": "/"}, "PATH_DENIED")
