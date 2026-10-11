@@ -97,6 +97,7 @@ struct ProcessEntry {
     stdin: AsyncMutex<Option<ChildStdin>>,
     stop: Mutex<Option<oneshot::Sender<()>>>,
     status: watch::Receiver<Status>,
+    activity: watch::Receiver<u64>,
     started: Instant,
 }
 
@@ -173,6 +174,7 @@ impl ProcessTable {
         command: String,
         stop_tx: oneshot::Sender<()>,
         status_rx: watch::Receiver<Status>,
+        activity_rx: watch::Receiver<u64>,
     ) -> Result<(ProcessId, Arc<ProcessEntry>), Fault> {
         let entry = Arc::new(ProcessEntry {
             command,
@@ -181,6 +183,7 @@ impl ProcessTable {
             stdin: AsyncMutex::new(None),
             stop: Mutex::new(Some(stop_tx)),
             status: status_rx,
+            activity: activity_rx,
             started: Instant::now(),
         });
 
@@ -229,6 +232,7 @@ impl ProcessTable {
         }
 
         let (stop_tx, stop_rx) = oneshot::channel();
+        let (activity_tx, activity_rx) = watch::channel(0_u64);
         let (status_tx, status_rx) = watch::channel(Status {
             running: true,
             exit_code: None,
@@ -236,7 +240,8 @@ impl ProcessTable {
             stopped: false,
             duration_ms: None,
         });
-        let (id, entry) = self.insert_entry(&config, command_name, stop_tx, status_rx)?;
+        let (id, entry) =
+            self.insert_entry(&config, command_name, stop_tx, status_rx, activity_rx)?;
 
         let mut child = match command.spawn() {
             Ok(child) => child,
@@ -272,11 +277,13 @@ impl ProcessTable {
             stdout,
             entry.stdout.clone(),
             config.limits.max_stdout_bytes,
+            activity_tx.clone(),
         ));
         let err_task = tokio::spawn(drain_into(
             stderr,
             entry.stderr.clone(),
             config.limits.max_stderr_bytes,
+            activity_tx.clone(),
         ));
 
         let supervisor_entry = entry.clone();
@@ -347,6 +354,7 @@ impl ProcessTable {
 
             let mut state = state.lock().unwrap();
             status_tx.send_replace(status);
+            activity_tx.send_modify(|version| *version = version.wrapping_add(1));
             ProcessTable::release_active_locked(&mut state, id);
             if state.entries.contains_key(&id) {
                 let sequence = state.next_completion;
@@ -361,18 +369,57 @@ impl ProcessTable {
         Ok(id)
     }
 
-    pub fn submit(
+    pub async fn submit(
         &self,
         config: Arc<Config>,
         request: CommandRequest,
+        wait_ms: u64,
+        inline_output_limit: usize,
     ) -> Result<serde_json::Value, Fault> {
+        let max_output = config
+            .limits
+            .max_stdout_bytes
+            .max(config.limits.max_stderr_bytes);
         let id = self.spawn(
             config.clone(),
             request,
             config.limits.default_timeout_ms,
             InputMode::Closed,
         )?;
-        Ok(json!({"state": "submitted", "process_id": id.0}))
+
+        if wait_ms > 0 {
+            let entry = self.get(id.0)?;
+            let mut status = entry.status.clone();
+            if status.borrow().running {
+                let _ = tokio::time::timeout(Duration::from_millis(wait_ms), async {
+                    while status.borrow().running {
+                        if status.changed().await.is_err() {
+                            break;
+                        }
+                    }
+                })
+                .await;
+            }
+        }
+
+        let entry = self.get(id.0)?;
+        if entry.status.borrow().running {
+            return Ok(json!({"state": "submitted", "process_id": id.0}));
+        }
+
+        let mut completed = self.read(
+            id.0,
+            0,
+            0,
+            inline_output_limit.min(max_output),
+            max_output,
+        )?;
+        let object = completed
+            .as_object_mut()
+            .expect("process read result is an object");
+        object.insert("state".into(), json!("completed"));
+        object.insert("process_id".into(), json!(id.0));
+        Ok(completed)
     }
 
     pub fn start(
@@ -520,6 +567,44 @@ impl ProcessTable {
         Ok(json!({"stdout": stdout, "stderr": stderr, "status": status}))
     }
 
+    pub async fn read_wait(
+        &self,
+        id: u64,
+        stdout_offset: u64,
+        stderr_offset: u64,
+        limit: usize,
+        max: usize,
+        wait_ms: u64,
+        max_wait_ms: u64,
+    ) -> Result<serde_json::Value, Fault> {
+        if wait_ms > max_wait_ms {
+            return Err(Fault::new(
+                "INVALID_REQUEST",
+                "wait_ms is outside configured bounds",
+            ));
+        }
+        let entry = self.get(id)?;
+        let has_new_data = || {
+            let stdout_total = entry.stdout.lock().unwrap().total;
+            let stderr_total = entry.stderr.lock().unwrap().total;
+            stdout_total > stdout_offset
+                || stderr_total > stderr_offset
+                || !entry.status.borrow().running
+        };
+        if wait_ms > 0 && !has_new_data() {
+            let mut activity = entry.activity.clone();
+            let _ = activity.borrow_and_update();
+            if !has_new_data() {
+                let _ = tokio::time::timeout(
+                    Duration::from_millis(wait_ms),
+                    activity.changed(),
+                )
+                .await;
+            }
+        }
+        self.read(id, stdout_offset, stderr_offset, limit, max)
+    }
+
     pub async fn input(
         &self,
         id: u64,
@@ -599,6 +684,7 @@ async fn drain_into<R: AsyncRead + Unpin>(
     mut reader: R,
     buffer: Arc<Mutex<Buffer>>,
     cap: usize,
+    activity: watch::Sender<u64>,
 ) -> io::Result<()> {
     let mut chunk = [0_u8; 8192];
     loop {
@@ -607,6 +693,7 @@ async fn drain_into<R: AsyncRead + Unpin>(
             break;
         }
         buffer.lock().unwrap().append(&chunk[..count], cap);
+        activity.send_modify(|version| *version = version.wrapping_add(1));
     }
     Ok(())
 }
