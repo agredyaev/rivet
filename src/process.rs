@@ -407,13 +407,8 @@ impl ProcessTable {
             return Ok(json!({"state": "submitted", "process_id": id.0}));
         }
 
-        let mut completed = self.read(
-            id.0,
-            0,
-            0,
-            inline_output_limit.min(max_output),
-            max_output,
-        )?;
+        let mut completed =
+            self.read(id.0, 0, 0, inline_output_limit.min(max_output), max_output)?;
         let object = completed
             .as_object_mut()
             .expect("process read result is an object");
@@ -595,11 +590,8 @@ impl ProcessTable {
             let mut activity = entry.activity.clone();
             let _ = activity.borrow_and_update();
             if !has_new_data() {
-                let _ = tokio::time::timeout(
-                    Duration::from_millis(wait_ms),
-                    activity.changed(),
-                )
-                .await;
+                let _ =
+                    tokio::time::timeout(Duration::from_millis(wait_ms), activity.changed()).await;
             }
         }
         self.read(id, stdout_offset, stderr_offset, limit, max)
