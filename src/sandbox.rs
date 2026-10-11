@@ -245,6 +245,12 @@ fn macos_profile(executable: &Path, workspace: &Path, network: bool) -> String {
     for path in toolchain_paths() {
         profile.push_str(&allow_read_rule(&path));
     }
+    for selector in [
+        Path::new("/var/select/developer_dir"),
+        Path::new("/private/var/select/developer_dir"),
+    ] {
+        profile.push_str(&allow_read_rule(selector));
+    }
 
     let cache = cache_root(&workspace);
     profile.push_str(&allow_read_rule(&cache));
@@ -538,6 +544,38 @@ mod tests {
         .unwrap();
         apply_environment(&mut command, &workspace);
         let output = command.output().unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let project = workspace.join(format!(
+            ".rivet-sandbox-cargo-check-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir(&project).unwrap();
+        fs::write(
+            project.join("Cargo.toml"),
+            "[package]\nname = \"rivet_sandbox_check\"\nversion = \"0.1.0\"\nedition = \"2021\"\n[lib]\npath = \"lib.rs\"\n",
+        )
+        .unwrap();
+        fs::write(project.join("lib.rs"), "pub fn check() -> bool { true }\n").unwrap();
+
+        let args = [
+            "check".to_owned(),
+            "--offline".to_owned(),
+            "--manifest-path".to_owned(),
+            project.join("Cargo.toml").display().to_string(),
+        ];
+        let mut check = command(&cargo, &args, &workspace, &workspace, false).unwrap();
+        apply_environment(&mut check, &workspace);
+        let output = check.output().unwrap();
+        let _ = fs::remove_dir_all(&project);
         assert!(
             output.status.success(),
             "{}",
