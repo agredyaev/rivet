@@ -1,12 +1,7 @@
 #[test]
 fn real_stdio_session() {
-    let (python, script) = if cfg!(windows) {
-        ("python", "/tests/portable_smoke.py")
-    } else {
-        ("python3", "/tests/smoke.py")
-    };
-    let output = std::process::Command::new(python)
-        .arg(format!("{}{script}", env!("CARGO_MANIFEST_DIR")))
+    let output = std::process::Command::new("python3")
+        .arg(format!("{}/tests/smoke.py", env!("CARGO_MANIFEST_DIR")))
         .arg(env!("CARGO_BIN_EXE_rivet"))
         .output()
         .expect("run MCP smoke check");

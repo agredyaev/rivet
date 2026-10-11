@@ -17,7 +17,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-latest, windows-latest]
+        os: [macos-latest, ubuntu-latest]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     permissions:
@@ -27,45 +27,20 @@ jobs:
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           components: clippy, rustfmt
+      - if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap
       - run: cargo fmt --check
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
       - run: cargo build --locked --release
-      - if: runner.os != 'Windows'
-        run: target/release/rivet --help && target/release/rivet serve --help
-      - if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          & target/release/rivet.exe --help
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-          & target/release/rivet.exe serve --help
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
-      - if: runner.os != 'Windows'
-        run: target/release/rivet config-check --config rivet.example.toml --root .
-      - if: runner.os == 'Windows'
-        run: target/release/rivet.exe config-check --config rivet.example.toml --root .
-      - if: runner.os != 'Windows'
-        run: |
+      - run: target/release/rivet --help && target/release/rivet serve --help
+      - run: target/release/rivet config-check --config rivet.example.toml --root .
+      - run: |
           bash -n scripts/install.sh
           help=$(bash scripts/install.sh --help)
           grep -Fq -- '--allow-any-args NAME' <<< "$help"
           printf '%s\n' "$help"
-      - if: runner.os != 'Windows'
-        run: python3 tests/smoke.py target/release/rivet
-      - if: runner.os == 'Windows'
-        run: python tests/portable_smoke.py target/release/rivet.exe
-      - if: runner.os == 'Windows'
-        shell: pwsh
-        run: |
-          foreach ($path in @("$env:GITHUB_WORKSPACE/scripts/install.ps1")) {
-            $tokens = $null
-            $errors = $null
-            [System.Management.Automation.Language.Parser]::ParseFile($path, [ref]$tokens, [ref]$errors) | Out-Null
-            if ($errors.Count) { $errors | ForEach-Object { Write-Error $_ }; exit 1 }
-          }
-          $help = & pwsh -NoProfile -File "$env:GITHUB_WORKSPACE/scripts/install.ps1" -Help 2>&1 | Out-String
-          if ($LASTEXITCODE -ne 0) { throw 'PowerShell installer -Help failed.' }
-          if ($help -notmatch '-AllowAnyArgs') { throw 'PowerShell installer help omits -AllowAnyArgs.' }
+      - run: python3 tests/smoke.py target/release/rivet
       - if: runner.os == 'macOS'
         run: |
           rustup target add aarch64-apple-darwin
@@ -77,6 +52,19 @@ jobs:
           path: target/aarch64-apple-darwin/release/rivet
           if-no-files-found: error
 
+  fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+        with:
+          toolchain: nightly
+      - run: cargo install cargo-fuzz --version 0.13.2 --locked
+      - run: cargo fuzz run tunnel_wire -- -max_total_time=10 -timeout=2
+
   cross:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -86,9 +74,9 @@ jobs:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
-          targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu, x86_64-pc-windows-gnu
+          targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
       - run: python3 -m pip install cargo-zigbuild==0.23.4
-      - run: cargo zigbuild --locked --release --target x86_64-unknown-linux-gnu --target aarch64-unknown-linux-gnu --target x86_64-pc-windows-gnu
+      - run: cargo zigbuild --locked --release --target x86_64-unknown-linux-gnu --target aarch64-unknown-linux-gnu
       - run: python3 tests/smoke.py target/x86_64-unknown-linux-gnu/release/rivet
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -96,25 +84,10 @@ jobs:
           path: |
             target/x86_64-unknown-linux-gnu/release/rivet
             target/aarch64-unknown-linux-gnu/release/rivet
-            target/x86_64-pc-windows-gnu/release/rivet.exe
           if-no-files-found: error
 
-  verify-cross-windows:
-    needs: cross
-    runs-on: windows-latest
-    timeout-minutes: 20
-    permissions:
-      contents: read
-    steps:
-      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
-        with:
-          name: rivet-cross-targets
-          path: cross
-      - run: python tests/portable_smoke.py cross/x86_64-pc-windows-gnu/release/rivet.exe
-
   release-artifacts:
-    needs: [build, cross, verify-cross-windows]
+    needs: [build, cross, fuzz]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -141,20 +114,17 @@ jobs:
             package_dir="$(mktemp -d)"
             mkdir -p "$package_dir/bin"
             cp "$binary" "$package_dir/bin/$binary_name"
-            cp rivet.example.toml "$package_dir/rivet.toml"
             chmod +x "$package_dir/bin/$binary_name"
             (cd "$package_dir" && zip -qr "$GITHUB_WORKSPACE/dist/$asset" .)
             rm -rf "$package_dir"
 
             entries="$(unzip -Z1 "dist/$asset")"
-            printf '%s\n' "$entries" | grep -Fxq 'rivet.toml'
             printf '%s\n' "$entries" | grep -Fxq "bin/$binary_name"
             ! printf '%s\n' "$entries" | grep -Eq '(^|/)(scripts/|install\.sh$|install\.ps1$)'
           }
 
           package staged/cross/x86_64-unknown-linux-gnu/release/rivet rivet rivet-linux-x64.zip
           package staged/cross/aarch64-unknown-linux-gnu/release/rivet rivet rivet-linux-aarch64.zip
-          package staged/cross/x86_64-pc-windows-gnu/release/rivet.exe rivet.exe rivet-windows-x64.zip
           package staged/macos/rivet rivet rivet-darwin-arm64.zip
 
           (cd dist && sha256sum rivet-*.zip > SHA256SUMS)

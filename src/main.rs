@@ -7,6 +7,7 @@ mod config;
 mod filesystem;
 mod mcp;
 mod process;
+mod sandbox;
 mod session;
 mod tunnel;
 
@@ -22,7 +23,7 @@ struct PendingCommand {
 fn print_usage(action: Option<&str>) {
     match action {
         Some("session") => println!(
-            "Usage: rivet session [--root PATH] [--allow-command NAME=EXECUTABLE] [--allow-subcommand NAME=VALUE] [--allow-any-args NAME]\nWithout command flags, Rivet prompts for built-in and custom commands."
+            "Usage: rivet session [--network] [--allow-command NAME=EXECUTABLE] [--allow-subcommand NAME=VALUE] [--allow-any-args NAME]\nThe current directory is the workspace root. Child network access is disabled unless --network is supplied. Without command flags, Rivet prompts for built-in and custom commands."
         ),
         Some(action) if matches!(action, "serve" | "doctor" | "commands" | "config-check") => {
             println!(
@@ -57,36 +58,8 @@ async fn main() -> ExitCode {
         print_usage(None);
         return ExitCode::SUCCESS;
     }
-    if action == "session-mcp" {
-        let executable = match env::current_exe() {
-            Ok(path) => path,
-            Err(error) => {
-                eprintln!("Cannot locate Rivet executable: {error}");
-                return ExitCode::FAILURE;
-            }
-        };
-        let status = match std::process::Command::new(executable)
-            .arg("serve")
-            .args(args)
-            .env_remove("CONTROL_PLANE_API_KEY")
-            .env_remove("OPENAI_API_KEY")
-            .env_remove("OPENAI_ADMIN_KEY")
-            .status()
-        {
-            Ok(status) => status,
-            Err(error) => {
-                eprintln!("Could not start Rivet MCP server: {error}");
-                return ExitCode::FAILURE;
-            }
-        };
-        return if status.success() {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::FAILURE
-        };
-    }
     if action == "session" {
-        return session::run(args.collect());
+        return session::run(args.collect()).await;
     }
     let mut path = PathBuf::from("./rivet.toml");
     let mut roots = Vec::new();

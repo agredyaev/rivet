@@ -2,17 +2,13 @@
 //!
 //! This module applies command, path, environment, and timeout policy before a
 //! managed child starts. Arguments go directly to the configured executable.
-use crate::{config::Config, mcp::Fault};
+use crate::{config::Config, mcp::Fault, sandbox};
 use cap_std::fs::Dir;
 use serde::Deserialize;
 use serde_json::json;
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use std::{collections::BTreeMap, fs, io, path::Path, process::Stdio};
-#[cfg(unix)]
 use std::{os::fd::AsRawFd, os::unix::process::CommandExt};
 use tokio::process::{Child, Command};
-#[cfg(unix)]
 use tokio::time::Duration;
 
 #[derive(Clone, Deserialize, schemars::JsonSchema)]
@@ -137,13 +133,37 @@ pub fn admitted(
         .map_err(|_| Fault::new("PATH_DENIED", "cwd is unavailable or escapes allowed roots"))?;
     let canonical_cwd = fs::canonicalize(&request.cwd)
         .map_err(|_| Fault::new("PATH_DENIED", "cwd cannot be checked"))?;
-    for argument in &request.args {
-        check_argument_path(config, &canonical_cwd, argument)?;
+    if !config.sandbox_commands {
+        for argument in &request.args {
+            check_argument_path(config, &canonical_cwd, argument)?;
+        }
     }
 
-    let mut command = std::process::Command::new(&entry.path);
+    let mut command = if config.sandbox_commands {
+        let workspace = config
+            .roots
+            .first()
+            .ok_or_else(|| Fault::new("SANDBOX_ERROR", "sandbox workspace is unavailable"))?;
+        sandbox::command(
+            &entry.path,
+            &request.args,
+            &workspace.path,
+            &canonical_cwd,
+            config.sandbox_network,
+        )
+        .map_err(|error| {
+            Fault::with(
+                "SANDBOX_ERROR",
+                "failed to prepare sandbox",
+                json!({"error": error}),
+            )
+        })?
+    } else {
+        let mut command = std::process::Command::new(&entry.path);
+        command.args(&request.args);
+        command
+    };
     command
-        .args(&request.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -170,33 +190,24 @@ pub fn admitted(
         }
         command.env(name, value);
     }
-
-    #[cfg(unix)]
-    {
-        command.process_group(0);
-        unsafe {
-            command.pre_exec(move || {
-                if libc::fchdir(cwd.as_raw_fd()) == 0 {
-                    Ok(())
-                } else {
-                    Err(io::Error::last_os_error())
-                }
-            });
-        }
+    if config.sandbox_commands {
+        sandbox::apply_environment(&mut command, &config.roots[0].path);
     }
 
-    #[cfg(windows)]
-    {
-        drop(cwd);
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        command.creation_flags(CREATE_NEW_PROCESS_GROUP);
-        command.current_dir(canonical_cwd);
+    command.process_group(0);
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fchdir(cwd.as_raw_fd()) == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        });
     }
 
     Ok((Command::from(command), timeout_ms))
 }
 
-#[cfg(unix)]
 pub fn kill_group(pid: u32, signal: i32) -> io::Result<()> {
     let code = unsafe { libc::killpg(pid as i32, signal) };
     if code == 0 {
@@ -210,7 +221,6 @@ pub fn kill_group(pid: u32, signal: i32) -> io::Result<()> {
     }
 }
 
-#[cfg(unix)]
 pub async fn terminate(child: &mut Child, pid: u32) -> io::Result<()> {
     kill_group(pid, libc::SIGTERM)?;
     tokio::time::sleep(Duration::from_secs(1)).await;
@@ -218,20 +228,6 @@ pub async fn terminate(child: &mut Child, pid: u32) -> io::Result<()> {
         && error.raw_os_error() != Some(libc::EPERM)
     {
         return Err(error);
-    }
-    child.wait().await.map(|_| ())
-}
-
-#[cfg(windows)]
-pub async fn terminate(child: &mut Child, pid: u32) -> io::Result<()> {
-    let status = Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await?;
-    if !status.success() && child.try_wait()?.is_none() {
-        return Err(io::Error::other("taskkill failed to stop the process tree"));
     }
     child.wait().await.map(|_| ())
 }

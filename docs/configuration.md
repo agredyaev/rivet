@@ -1,6 +1,6 @@
 # Configuration
 
-Rivet reads TOML from `./rivet.toml` unless `--config PATH` is supplied. Unknown fields are rejected. Start with [`rivet.example.toml`](../rivet.example.toml).
+`rivet session` does not read a configuration file: it uses the current directory as its workspace and embedded resource/environment defaults. The legacy stdio commands read TOML from `./rivet.toml` unless `--config PATH` is supplied. Unknown fields are rejected. Start with [`rivet.example.toml`](../rivet.example.toml) for stdio mode.
 
 Run `rivet --help` for the command list. Add `--help` or `-h` after `serve`, `doctor`, `commands`, or `config-check` to print that command's options. `rivet session --help` prints the interactive session options without reading the config file.
 
@@ -27,7 +27,7 @@ default_timeout_ms = 120000
 max_timeout_ms = 1800000
 ```
 
-`max_running_processes` limits live managed processes. Completed retained entries do not consume live-process capacity. `max_file_read_bytes` cannot exceed 64 MiB. `default_timeout_ms` cannot exceed `max_timeout_ms`; the maximum timeout cannot exceed 4,294,967,295 ms. `run_command` waits for process completion and returns the final bounded result in one MCP response. Use `start_process` for asynchronous execution.
+`max_running_processes` limits live managed processes. Completed retained entries do not consume live-process capacity. `max_file_read_bytes` cannot exceed 64 MiB. `default_timeout_ms` cannot exceed `max_timeout_ms`; the maximum timeout cannot exceed 4,294,967,295 ms. `run_command` submits a managed process and returns immediately; its missing `timeout_ms` uses `default_timeout_ms`. `start_process` keeps stdin available and uses `max_timeout_ms` when no timeout is supplied.
 
 ## Environment
 

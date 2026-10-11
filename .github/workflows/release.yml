@@ -103,7 +103,6 @@ jobs:
             rivet-linux-x64.zip
             rivet-linux-aarch64.zip
             rivet-darwin-arm64.zip
-            rivet-windows-x64.zip
             SHA256SUMS
           )
           for asset in "${expected[@]}"; do

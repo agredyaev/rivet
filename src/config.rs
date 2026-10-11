@@ -4,7 +4,6 @@
 //! capabilities so filesystem operations can remain relative to those roots.
 use cap_std::{ambient_authority, fs::Dir};
 use serde::Deserialize;
-#[cfg(unix)]
 use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -59,6 +58,8 @@ pub struct Config {
     pub limits: Limits,
     pub environment: Environment,
     pub commands: BTreeMap<String, CommandEntry>,
+    pub sandbox_commands: bool,
+    pub sandbox_network: bool,
 }
 
 fn env_name(s: &str) -> bool {
@@ -77,19 +78,7 @@ fn executable(input: &str) -> Result<PathBuf, String> {
             .collect()
     };
     for path in candidates {
-        #[cfg(windows)]
-        let paths: Vec<_> = if path.extension().is_some() {
-            vec![path]
-        } else {
-            env::var("PATHEXT")
-                .unwrap_or_else(|_| ".COM;.EXE;.BAT;.CMD".into())
-                .split(';')
-                .map(|extension| PathBuf::from(format!("{}{extension}", path.display())))
-                .collect()
-        };
-        #[cfg(not(windows))]
-        let paths = vec![path];
-        for path in paths {
+        for path in [path] {
             let path = if path.is_absolute() {
                 path
             } else if let Ok(current_dir) = env::current_dir() {
@@ -153,17 +142,7 @@ mod tests {
 }
 
 fn executable_file(metadata: &fs::Metadata) -> bool {
-    if !metadata.is_file() {
-        return false;
-    }
-    #[cfg(unix)]
-    {
-        metadata.permissions().mode() & 0o111 != 0
-    }
-    #[cfg(not(unix))]
-    {
-        true
-    }
+    metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
 }
 
 impl Config {
@@ -174,7 +153,50 @@ impl Config {
     ) -> Result<Self, String> {
         let source = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
         let file: ConfigFile = toml::from_str(&source).map_err(|e| e.to_string())?;
-        let limits = file.limits;
+        Self::build(
+            file.limits,
+            file.environment,
+            cli_roots,
+            command_specs,
+            false,
+            false,
+        )
+    }
+
+    pub fn native_session(
+        cli_roots: Vec<PathBuf>,
+        command_specs: BTreeMap<String, CommandConfig>,
+        sandbox_network: bool,
+    ) -> Result<Self, String> {
+        Self::build(
+            Limits {
+                max_stdout_bytes: 2 * 1024 * 1024,
+                max_stderr_bytes: 2 * 1024 * 1024,
+                max_file_read_bytes: 4 * 1024 * 1024,
+                max_directory_entries: 1000,
+                max_running_processes: 8,
+                default_timeout_ms: 120_000,
+                max_timeout_ms: 1_800_000,
+            },
+            Environment {
+                pass: vec!["PATH".into(), "LANG".into()],
+                allow_override: vec!["RUST_LOG".into()],
+            },
+            cli_roots,
+            command_specs,
+            true,
+            sandbox_network,
+        )
+    }
+
+    fn build(
+        limits: Limits,
+        environment: Environment,
+        cli_roots: Vec<PathBuf>,
+        command_specs: BTreeMap<String, CommandConfig>,
+        sandbox_commands: bool,
+        sandbox_network: bool,
+    ) -> Result<Self, String> {
         if limits.max_stdout_bytes == 0
             || limits.max_stderr_bytes == 0
             || limits.max_file_read_bytes == 0
@@ -228,12 +250,7 @@ impl Config {
                 .count()
                 .cmp(&a.path.components().count())
         });
-        for name in file
-            .environment
-            .pass
-            .iter()
-            .chain(&file.environment.allow_override)
-        {
+        for name in environment.pass.iter().chain(&environment.allow_override) {
             if !env_name(name) {
                 return Err(format!("invalid environment name: {name:?}"));
             }
@@ -267,8 +284,10 @@ impl Config {
         Ok(Self {
             roots,
             limits,
-            environment: file.environment,
+            environment,
             commands,
+            sandbox_commands,
+            sandbox_network,
         })
     }
 
@@ -289,44 +308,24 @@ impl Config {
             root.dir
                 .read_dir(".")
                 .map_err(|e| format!("{}: {e}", root.path.display()))?;
-            #[cfg(unix)]
+            let path = std::ffi::CString::new(".").expect("static string");
+            use std::os::fd::AsRawFd;
+            // SAFETY: the directory fd is open and path is a valid NUL-terminated string.
+            if unsafe {
+                libc::faccessat(
+                    root.dir.as_raw_fd(),
+                    path.as_ptr(),
+                    libc::R_OK | libc::W_OK | libc::X_OK,
+                    0,
+                )
+            } < 0
             {
-                let path = std::ffi::CString::new(".").expect("static string");
-                use std::os::fd::AsRawFd;
-                // SAFETY: the directory fd is open and path is a valid NUL-terminated string.
-                if unsafe {
-                    libc::faccessat(
-                        root.dir.as_raw_fd(),
-                        path.as_ptr(),
-                        libc::R_OK | libc::W_OK | libc::X_OK,
-                        0,
-                    )
-                } < 0
-                {
-                    return Err(format!(
-                        "{}: root needs read, write, and search access",
-                        root.path.display()
-                    ));
-                }
-            }
-            #[cfg(windows)]
-            {
-                let probe = format!(".rivet-doctor-{}", std::process::id());
-                let mut options = cap_std::fs::OpenOptions::new();
-                options.write(true).create_new(true);
-                let file = root.dir.open_with(&probe, &options).map_err(|error| {
-                    format!("{}: root needs write access: {error}", root.path.display())
-                })?;
-                drop(file);
-                root.dir.remove_file(&probe).map_err(|error| {
-                    format!(
-                        "{}: failed to remove write check: {error}",
-                        root.path.display()
-                    )
-                })?;
+                return Err(format!(
+                    "{}: root needs read, write, and search access",
+                    root.path.display()
+                ));
             }
         }
-        #[cfg(unix)]
         for fd in [0, 1, 2] {
             // SAFETY: fcntl only inspects the fixed stdio descriptor number.
             if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
@@ -334,5 +333,43 @@ impl Config {
             }
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod native_session_tests {
+    use super::Config;
+    use std::{
+        collections::BTreeMap,
+        fs,
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    #[test]
+    fn native_session_uses_embedded_defaults_without_toml() {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "rivet-native-session-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).unwrap();
+
+        let config = Config::native_session(vec![root.clone()], BTreeMap::new(), false).unwrap();
+        assert_eq!(config.limits.max_stdout_bytes, 2 * 1024 * 1024);
+        assert_eq!(config.limits.max_stderr_bytes, 2 * 1024 * 1024);
+        assert_eq!(config.limits.max_file_read_bytes, 4 * 1024 * 1024);
+        assert_eq!(config.limits.max_directory_entries, 1000);
+        assert_eq!(config.limits.max_running_processes, 8);
+        assert_eq!(config.limits.default_timeout_ms, 120_000);
+        assert_eq!(config.limits.max_timeout_ms, 1_800_000);
+        assert_eq!(config.environment.pass, ["PATH", "LANG"]);
+        assert_eq!(config.environment.allow_override, ["RUST_LOG"]);
+        assert!(config.sandbox_commands);
+        assert!(!config.sandbox_network);
+
+        fs::remove_dir_all(root).unwrap();
     }
 }

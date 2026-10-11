@@ -4,12 +4,17 @@
 //! and convert the results into MCP responses.
 use crate::{commands::CommandRequest, config::Config, filesystem, process::ProcessTable};
 use rmcp::{
-    ServiceExt,
+    RoleServer, ServiceExt,
     handler::server::router::tool::ToolRouter,
     handler::server::wrapper::Parameters,
-    model::{CallToolResult, ContentBlock, Implementation, ServerCapabilities, ServerConfig},
+    model::{
+        CallToolResult, ClientJsonRpcMessage, ContentBlock, Implementation, ServerCapabilities,
+        ServerConfig,
+    },
     schemars::JsonSchema,
+    service::serve_directly,
     tool, tool_handler, tool_router,
+    transport::OneshotTransport,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
@@ -65,6 +70,57 @@ struct Rivet {
     config: Arc<Config>,
     processes: Arc<ProcessTable>,
     mutation: Arc<Mutex<()>>,
+}
+
+#[derive(Clone)]
+pub(crate) struct Runtime {
+    server: Arc<Rivet>,
+    processes: Arc<ProcessTable>,
+}
+
+pub(crate) enum Dispatch {
+    Response(Vec<u8>),
+    NotificationAck,
+}
+
+impl Runtime {
+    pub(crate) fn new(config: Arc<Config>) -> Self {
+        let processes = Arc::new(ProcessTable::new());
+        Self {
+            server: Arc::new(Rivet {
+                config,
+                processes: processes.clone(),
+                mutation: Arc::new(Mutex::new(())),
+            }),
+            processes,
+        }
+    }
+
+    pub(crate) async fn dispatch_jsonrpc(&self, input: &[u8]) -> Result<Dispatch, String> {
+        let message: ClientJsonRpcMessage = serde_json::from_slice(input)
+            .map_err(|error| format!("invalid MCP JSON-RPC: {error}"))?;
+        match message {
+            ClientJsonRpcMessage::Request(request) => {
+                let (transport, mut receiver) =
+                    OneshotTransport::<RoleServer>::new(ClientJsonRpcMessage::Request(request));
+                let service =
+                    serve_directly::<RoleServer, _, _, _, _>(self.server.clone(), transport, None);
+                let response = receiver
+                    .recv()
+                    .await
+                    .ok_or("MCP service closed without a response")?;
+                let bytes = serde_json::to_vec(&response).map_err(|error| error.to_string())?;
+                let _ = service.waiting().await;
+                Ok(Dispatch::Response(bytes))
+            }
+            ClientJsonRpcMessage::Notification(_) => Ok(Dispatch::NotificationAck),
+            _ => Err("unsupported inbound MCP JSON-RPC message".into()),
+        }
+    }
+
+    pub(crate) async fn shutdown(&self) {
+        self.processes.shutdown().await;
+    }
 }
 
 // Build the route table once instead of reconstructing it for each request.
@@ -129,10 +185,10 @@ impl Rivet {
     }
 
     #[tool(
-        description = "Run a registered command synchronously and return its final bounded output"
+        description = "Submit a registered command and return a managed process handle immediately"
     )]
-    async fn run_command(&self, Parameters(request): Parameters<CommandRequest>) -> CallToolResult {
-        result(self.processes.run(self.config.clone(), request).await)
+    fn run_command(&self, Parameters(request): Parameters<CommandRequest>) -> CallToolResult {
+        result(self.processes.submit(self.config.clone(), request))
     }
 
     #[tool(description = "Start a registered long-running process")]
@@ -336,12 +392,7 @@ impl<R: AsyncRead + Unpin> AsyncRead for LineLimited<R> {
 }
 
 pub async fn serve(config: Arc<Config>) -> Result<(), String> {
-    let processes = Arc::new(ProcessTable::new());
-    let server = Rivet {
-        config: config.clone(),
-        processes: processes.clone(),
-        mutation: Arc::new(Mutex::new(())),
-    };
+    let runtime = Runtime::new(config.clone());
     let cap = config
         .limits
         .max_file_read_bytes
@@ -353,11 +404,99 @@ pub async fn serve(config: Arc<Config>) -> Result<(), String> {
         bytes: 0,
         cap,
     };
-    let service = server
+    let service = runtime
+        .server
+        .as_ref()
+        .clone()
         .serve((input, tokio::io::stdout()))
         .await
         .map_err(|e| e.to_string())?;
     let ended = service.waiting().await.map_err(|e| e.to_string());
-    processes.shutdown().await;
+    runtime.shutdown().await;
     ended.map(|_| ())
+}
+
+#[cfg(test)]
+mod direct_tests {
+    use super::*;
+    use crate::config::CommandConfig;
+    use std::{
+        collections::BTreeMap,
+        fs,
+        sync::atomic::{AtomicU64, Ordering},
+        time::{SystemTime, UNIX_EPOCH},
+    };
+
+    static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(1);
+
+    fn direct_config() -> (Arc<Config>, std::path::PathBuf) {
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let sequence = NEXT_TEST_ROOT.fetch_add(1, Ordering::Relaxed);
+        let root = std::env::temp_dir().join(format!(
+            "rivet-direct-mcp-{}-{nonce}-{sequence}",
+            std::process::id()
+        ));
+        fs::create_dir(&root).unwrap();
+        let config_path = root.join("rivet.toml");
+        fs::write(
+            &config_path,
+            r#"[limits]
+max_stdout_bytes = 1024
+max_stderr_bytes = 1024
+max_file_read_bytes = 4096
+max_directory_entries = 64
+max_running_processes = 4
+default_timeout_ms = 1000
+max_timeout_ms = 10000
+[environment]
+pass = ["PATH"]
+allow_override = []
+"#,
+        )
+        .unwrap();
+        let config = Config::load(
+            &config_path,
+            vec![root.clone()],
+            BTreeMap::<String, CommandConfig>::new(),
+        )
+        .unwrap();
+        (Arc::new(config), root)
+    }
+
+    #[tokio::test]
+    async fn direct_stateless_tools_list_uses_same_router() {
+        let (config, root) = direct_config();
+        let runtime = Runtime::new(config);
+        let request = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
+        let response = runtime.dispatch_jsonrpc(request).await.unwrap();
+        let Dispatch::Response(bytes) = response else {
+            panic!("tools/list must return a terminal response");
+        };
+        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let tools = value["result"]["tools"].as_array().unwrap();
+        assert!(tools.iter().any(|tool| tool["name"] == "run_command"));
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool["name"] == "list_ready_processes")
+        );
+        runtime.shutdown().await;
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
+    async fn direct_notification_is_acknowledged_without_retained_session() {
+        let (config, root) = direct_config();
+        let runtime = Runtime::new(config);
+        let notification = br#"{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}"#;
+        assert!(matches!(
+            runtime.dispatch_jsonrpc(notification).await.unwrap(),
+            Dispatch::NotificationAck
+        ));
+        runtime.shutdown().await;
+        fs::remove_dir_all(root).unwrap();
+    }
 }

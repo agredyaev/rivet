@@ -14,14 +14,8 @@ use std::{
 };
 
 static TEMP_ID: AtomicU64 = AtomicU64::new(1);
-#[cfg(windows)]
-const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-
 fn no_follow(options: &mut OpenOptions) {
-    #[cfg(unix)]
     options.custom_flags(libc::O_NOFOLLOW);
-    #[cfg(windows)]
-    options.custom_flags(OPEN_REPARSE_POINT);
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]

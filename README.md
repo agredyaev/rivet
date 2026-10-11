@@ -3,11 +3,11 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/agredyaev/rivet/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/agredyaev/rivet/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/agredyaev/rivet?style=flat-square)](https://github.com/agredyaev/rivet/releases/latest)
 
-Rivet is an [MCP](https://modelcontextprotocol.io/) server over stdio.
+Rivet is a local MCP runtime with a native OpenAI Secure MCP Tunnel transport.
 
 It provides:
 - command execution limited to commands allowed for the current session;
-- file operations limited to configured roots;
+- native-session file operations limited to the current workspace;
 - long-running child processes.
 
 Rivet does not listen on a network port.
@@ -19,24 +19,19 @@ Run the installer from the workspace Rivet should access.
 macOS / Linux:
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/agredyaev/rivet/main/scripts/install.sh | bash -s -- --root "$PWD"
+curl -fsSL https://raw.githubusercontent.com/agredyaev/rivet/main/scripts/install.sh | bash
 ```
 
-Windows PowerShell:
-
-```powershell
-& ([scriptblock]::Create((Invoke-RestMethod 'https://raw.githubusercontent.com/agredyaev/rivet/main/scripts/install.ps1'))) -Root (Get-Location).Path
-```
+Windows is supported through WSL2. Install and run the Linux build from a WSL2 project directory; native Windows binaries are not shipped. Linux/WSL2 requires the `bubblewrap` package; macOS uses the built-in Seatbelt sandbox.
 
 The installer downloads the latest release and starts `rivet session`.
 
 During session setup, Rivet:
 1. asks which commands to allow;
 2. asks for the OpenAI tunnel ID and runtime API key;
-3. downloads and verifies the required tunnel client;
-4. starts the tunnel for the selected workspace and command scope.
+3. starts the native outbound HTTPS tunnel for the current directory and selected command scope.
 
-The runtime API key is entered with hidden input and is not saved. The temporary tunnel profile is removed when the session ends.
+The runtime API key is entered with hidden input and is not saved. The native tunnel keeps session scope only in memory.
 
 Built-in command presets:
 - `uv`, `mkdir`, `rg`, `make`: any arguments;
@@ -52,19 +47,14 @@ Download a package from [GitHub Releases](https://github.com/agredyaev/rivet/rel
 macOS / Linux:
 
 ```sh
+cd /path/to/project
 ./bin/rivet session
 ```
 
-Windows:
-
-```powershell
-powershell.exe -NoProfile -Command "& .\bin\rivet.exe session"
-```
-
-Set the workspace root and command scope explicitly when needed:
+The current directory is always the native session workspace. Child network access is disabled by default; add `--network` when builds need to download dependencies. Command scope can still be supplied non-interactively:
 
 ```sh
-./bin/rivet session --root /path/to/project \
+./bin/rivet session \
   --allow-command git=git \
   --allow-subcommand git=status \
   --allow-subcommand git=diff
@@ -81,7 +71,7 @@ If the MCP host starts Rivet directly instead of using `rivet session`:
   --allow-subcommand git=diff
 ```
 
-Rivet reads `./rivet.toml` by default. Use `--config PATH` for another file. Repeat `--root` and command flags to extend the session scope.
+`rivet session` uses the current directory as its only workspace root and requires no configuration file. The legacy stdio commands (`serve`, `doctor`, `commands`, `config-check`) continue to accept `--config` and `--root`.
 
 See [MCP setup](docs/mcp-setup.md) for Secure MCP Tunnel configuration.
 

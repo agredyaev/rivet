@@ -12,7 +12,15 @@ cargo build --locked --release
 python3 tests/smoke.py target/release/rivet
 ```
 
-On Windows, CI uses `tests/portable_smoke.py` with the native Windows executable.
+## Fuzzing
+
+The untrusted tunnel wire boundary is fuzzed with `fuzz/fuzz_targets/tunnel_wire.rs`:
+
+```sh
+cargo +nightly fuzz run tunnel_wire -- -max_total_time=10 -timeout=2
+```
+
+CI runs the same bounded smoke before release artifacts are packaged. Fuzz build output, corpus, and artifacts are generated locally and are not committed.
 
 ## Clippy
 
@@ -20,18 +28,17 @@ CI runs Clippy for all targets with `-D warnings`. The checked-in source has no 
 
 ## Cross-compilation
 
-CI installs `cargo-zigbuild` and builds Linux x86_64, Linux aarch64, and Windows x86_64 GNU targets on Ubuntu:
+CI installs `cargo-zigbuild` and builds Linux x86_64 and Linux aarch64 targets on Ubuntu:
 
 ```sh
 python3 -m pip install cargo-zigbuild==0.23.4
-rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu x86_64-pc-windows-gnu
+rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
 cargo zigbuild --locked --release \
   --target x86_64-unknown-linux-gnu \
-  --target aarch64-unknown-linux-gnu \
-  --target x86_64-pc-windows-gnu
+  --target aarch64-unknown-linux-gnu
 ```
 
-The CI workflow runs native builds and smoke tests on macOS, Linux, and Windows. It runs the cross-built Linux x64 binary on Ubuntu and Windows executable on Windows. Published GitHub releases contain `rivet-linux-x64.zip`, `rivet-linux-aarch64.zip`, `rivet-darwin-arm64.zip`, and `rivet-windows-x64.zip`; each archive contains the platform binary.
+The CI workflow runs native builds and smoke tests on macOS and Linux, plus cross-builds Linux x86_64/aarch64. Published GitHub releases contain `rivet-linux-x64.zip`, `rivet-linux-aarch64.zip`, and `rivet-darwin-arm64.zip`; Windows users run the Linux build under WSL2.
 
 ## Releases
 

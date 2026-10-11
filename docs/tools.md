@@ -1,12 +1,12 @@
 # MCP tools
 
-Rivet exposes these tools over MCP stdio. Paths and command working directories must be absolute and within an effective allowed root. Optional limits cannot exceed the values configured in [`rivet.toml`](configuration.md).
+Rivet exposes these tools through both the native tunnel and MCP stdio. Paths and command working directories must be absolute and within the effective workspace root. Native `session` uses embedded limits; stdio mode takes limits from [`rivet.toml`](configuration.md).
 
 | Tool | Purpose |
 | --- | --- |
 | `list_roots` | Return effective allowed roots. |
 | `list_commands` | Return registered commands and their argument policy. |
-| `run_command` | Run a registered command synchronously and return its final bounded output. |
+| `run_command` | Submit a registered command and return its managed process ID immediately. |
 | `start_process` | Start a registered command asynchronously and return its process ID immediately. |
 | `list_processes` | List retained managed processes for recovery after an interrupted request. |
 | `list_ready_processes` | List completed processes by completion sequence and optionally include bounded stdout/stderr. |
@@ -22,7 +22,7 @@ Rivet exposes these tools over MCP stdio. Paths and command working directories 
 
 `run_command` and `start_process` accept `command`, `args`, `cwd`, optional `timeout_ms`, and optional environment overrides in `env`. The command name must be registered. Restricted commands authorize the first argument using `allowed_subcommands`. A missing timeout uses `default_timeout_ms` for `run_command` and `max_timeout_ms` for `start_process`.
 
-`run_command` waits for the operating system to report process completion and returns `state = "completed"` with bounded stdout and stderr in the same MCP response. It uses no foreground wait window, polling loop, or command-duration heuristic. Use `start_process` before execution when the command must continue independently of the MCP request.
+`run_command` returns `state = "submitted"` and `process_id` immediately after spawn and supervisor handoff. The child continues independently of the MCP/tunnel request. Read completion and bounded output with `read_process_output` or `list_ready_processes`. `start_process` uses the same managed-process registry but keeps stdin available for interactive work.
 
 ## Processes
 
