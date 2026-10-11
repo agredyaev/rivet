@@ -309,10 +309,7 @@ impl Rivet {
             let (index, value) = match joined {
                 Ok(value) => value,
                 Err(_) => {
-                    return result(Err(Fault::new(
-                        "IO_ERROR",
-                        "command worker failed",
-                    )));
+                    return result(Err(Fault::new("IO_ERROR", "command worker failed")));
                 }
             };
             rows[index] = match value {
