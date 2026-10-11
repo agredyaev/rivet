@@ -534,7 +534,7 @@ mod tests {
         let Some(cargo) = env::var_os("CARGO").map(PathBuf::from) else {
             return;
         };
-        let mut command = command(
+        let mut version_command = command(
             &cargo,
             &["--version".to_owned()],
             &workspace,
@@ -542,8 +542,8 @@ mod tests {
             false,
         )
         .unwrap();
-        apply_environment(&mut command, &workspace);
-        let output = command.output().unwrap();
+        apply_environment(&mut version_command, &workspace);
+        let output = version_command.output().unwrap();
         assert!(
             output.status.success(),
             "{}",
