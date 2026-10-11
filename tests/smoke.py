@@ -200,7 +200,16 @@ allow_override = ["RIVET_TEST"]
                 "limit": 64,
                 "wait_ms": 2000,
             })
-            assert not waited["status"]["running"] and waited["stdout"]["text"] == "slow", waited
+            assert waited["stdout"]["text"] == "slow", waited
+            if waited["status"]["running"]:
+                waited = call(proc, 405, "read_process_output", {
+                    "process_id": slow["process_id"],
+                    "stdout_offset": waited["stdout"]["next_offset"],
+                    "stderr_offset": waited["stderr"]["next_offset"],
+                    "limit": 64,
+                    "wait_ms": 2000,
+                })
+            assert not waited["status"]["running"], waited
             batch_started = time.monotonic()
             batch = call(proc, 404, "run_commands", {
                 "commands": [
