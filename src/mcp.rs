@@ -19,6 +19,7 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use std::{
+    collections::BTreeMap,
     io,
     pin::Pin,
     sync::{Arc, LazyLock, Mutex},
@@ -129,10 +130,27 @@ static ROUTER: LazyLock<ToolRouter<Rivet>> = LazyLock::new(Rivet::tool_router);
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RunCommandRequest {
-    #[serde(flatten)]
-    command: CommandRequest,
+    command: String,
+    #[serde(default)]
+    args: Vec<String>,
+    cwd: String,
+    timeout_ms: Option<u64>,
+    #[serde(default)]
+    env: BTreeMap<String, String>,
     wait_ms: Option<u64>,
     output_limit: Option<usize>,
+}
+
+impl RunCommandRequest {
+    fn into_command(self) -> CommandRequest {
+        CommandRequest {
+            command: self.command,
+            args: self.args,
+            cwd: self.cwd,
+            timeout_ms: self.timeout_ms,
+            env: self.env,
+        }
+    }
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -214,11 +232,28 @@ impl Rivet {
             .limits
             .max_stdout_bytes
             .max(self.config.limits.max_stderr_bytes);
-        let wait_ms = request.wait_ms.unwrap_or(250).min(5_000);
-        let output_limit = request.output_limit.unwrap_or(64 * 1024).min(max_output);
+        let wait_ms = request.wait_ms.unwrap_or(250);
+        if wait_ms > 5_000 {
+            return result(Err(Fault::new(
+                "INVALID_REQUEST",
+                "wait_ms must not exceed 5000",
+            )));
+        }
+        let output_limit = request.output_limit.unwrap_or(64 * 1024);
+        if output_limit == 0 || output_limit > max_output {
+            return result(Err(Fault::new(
+                "INVALID_REQUEST",
+                "output_limit is outside configured bounds",
+            )));
+        }
         result(
             self.processes
-                .submit(self.config.clone(), request.command, wait_ms, output_limit)
+                .submit(
+                    self.config.clone(),
+                    request.into_command(),
+                    wait_ms,
+                    output_limit,
+                )
                 .await,
         )
     }
@@ -241,8 +276,20 @@ impl Rivet {
             .limits
             .max_stdout_bytes
             .max(self.config.limits.max_stderr_bytes);
-        let wait_ms = request.wait_ms.unwrap_or(250).min(5_000);
-        let output_limit = request.output_limit.unwrap_or(64 * 1024).min(max_output);
+        let wait_ms = request.wait_ms.unwrap_or(250);
+        if wait_ms > 5_000 {
+            return result(Err(Fault::new(
+                "INVALID_REQUEST",
+                "wait_ms must not exceed 5000",
+            )));
+        }
+        let output_limit = request.output_limit.unwrap_or(64 * 1024);
+        if output_limit == 0 || output_limit > max_output {
+            return result(Err(Fault::new(
+                "INVALID_REQUEST",
+                "output_limit is outside configured bounds",
+            )));
+        }
         let count = request.commands.len();
         let mut tasks = tokio::task::JoinSet::new();
         for (index, command) in request.commands.into_iter().enumerate() {
