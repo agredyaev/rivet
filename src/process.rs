@@ -570,9 +570,8 @@ impl ProcessTable {
         limit: usize,
         max: usize,
         wait_ms: u64,
-        max_wait_ms: u64,
     ) -> Result<serde_json::Value, Fault> {
-        if wait_ms > max_wait_ms {
+        if wait_ms > 30_000 {
             return Err(Fault::new(
                 "INVALID_REQUEST",
                 "wait_ms is outside configured bounds",
