@@ -29,7 +29,7 @@ Rivet itself:
 - Rivet filesystem tools use capability-based paths and cannot leave that workspace.
 - Child commands are OS-sandboxed before execution.
 - macOS uses `/usr/bin/sandbox-exec` (Seatbelt).
-- Linux and WSL2 use `bubblewrap`.
+- Linux and WSL2 use `bubblewrap`. Ubuntu 24.04's AppArmor restriction on unprivileged user namespaces requires the distro `bwrap-userns-restrict` profile; Rivet never disables that restriction globally.
 - The workspace is writable.
 - Common system and toolchain locations are read-only.
 - Other user data is not exposed to the child sandbox.

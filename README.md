@@ -22,7 +22,7 @@ macOS / Linux:
 curl -fsSL https://raw.githubusercontent.com/agredyaev/rivet/main/scripts/install.sh | bash
 ```
 
-Windows is supported through WSL2. Install and run the Linux build from a WSL2 project directory; native Windows binaries are not shipped. Linux/WSL2 requires the `bubblewrap` package; macOS uses the built-in Seatbelt sandbox.
+Windows is supported through WSL2. Install and run the Linux build from a WSL2 project directory; native Windows binaries are not shipped. Linux/WSL2 requires the `bubblewrap` package; Ubuntu 24.04 also requires the `bwrap-userns-restrict` AppArmor profile from `apparmor-profiles`. macOS uses the built-in Seatbelt sandbox.
 
 The installer downloads the latest release and starts `rivet session`.
 
