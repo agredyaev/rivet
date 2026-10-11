@@ -65,16 +65,40 @@ def run_to_completion(proc, number, arguments):
         return normalize_completed(submitted)
     assert submitted["state"] == "submitted", submitted
     process_id = submitted["process_id"]
+    stdout_offset = 0
+    stderr_offset = 0
+    stdout = []
+    stderr = []
+    truncated = False
     for _ in range(120):
         _wait_call_id += 1
         result = call(
             proc,
             _wait_call_id,
             "read_process_output",
-            {"process_id": process_id, "limit": 64, "wait_ms": 1000},
+            {
+                "process_id": process_id,
+                "stdout_offset": stdout_offset,
+                "stderr_offset": stderr_offset,
+                "limit": 64,
+                "wait_ms": 1000,
+            },
         )
+        stdout.append(result["stdout"]["text"])
+        stderr.append(result["stderr"]["text"])
+        stdout_offset = result["stdout"]["next_offset"]
+        stderr_offset = result["stderr"]["next_offset"]
+        truncated |= result["stdout"]["truncated"] or result["stderr"]["truncated"]
         if not result["status"]["running"]:
-            return normalize_completed({"process_id": process_id, **result})
+            return {
+                "process_id": process_id,
+                "exit_code": result["status"]["exit_code"],
+                "timed_out": result["status"]["timed_out"],
+                "stopped": result["status"]["stopped"],
+                "stdout": "".join(stdout),
+                "stderr": "".join(stderr),
+                "truncated": truncated,
+            }
     raise AssertionError("submitted run_command did not complete")
 
 
