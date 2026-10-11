@@ -381,7 +381,6 @@ impl Rivet {
                     request.limit.unwrap_or(max),
                     max,
                     request.wait_ms.unwrap_or(0),
-                    30_000,
                 )
                 .await,
         )
