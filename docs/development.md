@@ -2,7 +2,7 @@
 
 ## Local checks
 
-Install Rust with Edition 2024 support and Python 3. From the repository root:
+Install the current stable Rust toolchain and Python 3. From the repository root:
 
 ```sh
 cargo fmt --check
@@ -10,6 +10,7 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo build --locked --release
 python3 tests/smoke.py target/release/rivet
+python3 tests/install_smoke.py
 ```
 
 ## Dependency checks
@@ -53,6 +54,8 @@ Release CI fuzzes the critical untrusted-input and bounded-state boundaries with
 Run a target locally with nightly, for example:
 
 ```sh
+rustup toolchain install nightly
+cargo install cargo-fuzz --version 0.13.2 --locked
 cargo +nightly fuzz run tunnel_wire -- -max_total_time=20 -timeout=2 -dict=fuzz/dictionaries/tunnel_wire.dict
 cargo +nightly fuzz run mcp_wire -- -max_total_time=20 -timeout=2 -dict=fuzz/dictionaries/mcp_wire.dict
 cargo +nightly fuzz run output_buffer -- -max_total_time=20 -timeout=2
@@ -78,15 +81,19 @@ cargo zigbuild --locked --release \
   --target aarch64-unknown-linux-gnu
 ```
 
-The CI workflow runs native builds and smoke tests on macOS and Linux, plus cross-builds Linux x86_64/aarch64. Published GitHub releases contain `rivet-linux-x64.zip`, `rivet-linux-aarch64.zip`, and `rivet-darwin-arm64.zip`; Windows users run the Linux build under WSL2.
+The CI workflow runs native builds and smoke tests on macOS and Linux, plus cross-builds Linux x86_64/aarch64. The release archive names are `rivet-v<VERSION>-linux-x64.zip`, `rivet-v<VERSION>-linux-aarch64.zip`, and `rivet-v<VERSION>-darwin-arm64.zip`; Windows users run the Linux build under WSL2.
+
+With Zig installed through zvm, use `zvm install --nomirror 0.17.0` and prepend `"$HOME/.zvm/0.17.0"` to `PATH` instead of the Python package directory. Confirm `zig version` before building so an older system Zig cannot take precedence.
 
 ## Releases
 
 Use `fix:`, `perf:`, or `refactor:` for a patch release, `feat:` for a minor release, and `!` or `BREAKING CHANGE:` for a breaking release. After changes reach `main`, release-please opens a release PR and updates `Cargo.toml`, `Cargo.lock`, the version manifest, and `CHANGELOG.md`. Merge that PR to create the GitHub Release. Do not edit the package version by hand.
 
-CI audits dependencies, builds, tests, fuzzes, cross-builds, verifies binary architectures, and packages the release artifacts before publication. The release workflow requires the tag to equal `v<Cargo.toml version>` and requires a successful CI run whose `head_sha` exactly matches the release tag commit. It downloads that run's `rivet-release-assets` artifact, rejects any file outside the three supported platform ZIPs plus `SHA256SUMS`, verifies the checksums, and uploads those exact files to the GitHub Release. Each ZIP contains the binary and MIT LICENSE. It does not rebuild release binaries. To republish assets for an existing release, run the `Release` workflow manually with that tag.
+CI audits dependencies, builds, tests, fuzzes, cross-builds, verifies binary architectures, and packages the release artifacts before publication. The release workflow requires the tag to equal `v<Cargo.toml version>` and requires a successful CI run whose `head_sha` exactly matches the release tag commit. It downloads that run's `rivet-release-assets` artifact, rejects any file outside the three supported platform ZIPs plus `SHA256SUMS`, verifies the checksums, and uploads those exact files to the GitHub Release. CI reads `<VERSION>` from Cargo.toml; publication checks it against the tag. Each ZIP contains `bin/rivet` and `LICENSE`. `SHA256SUMS` keeps its name and lists the versioned ZIPs. It does not rebuild release binaries. To republish assets for an existing release, run the `Release` workflow manually with that tag.
 
 Release Please uses `GITHUB_TOKEN`, so its generated release PR does not start a separate `pull_request` workflow. Source changes must pass CI before they reach `main`.
+
+CI ignores changes limited to Markdown or `docs/`. For a documentation-only release commit, run CI manually on that commit before publishing assets; the release gate still requires a successful run at the exact tag SHA.
 
 ## Profiling
 

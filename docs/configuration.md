@@ -1,6 +1,6 @@
 # Startup options and limits
 
-All Rivet modes use built-in resource limits and environment policies. Workspace roots and command permissions are selected at startup.
+All Rivet modes use built-in resource limits and environment policies. No startup configuration file is required or loaded. Workspace roots and command permissions are selected at startup.
 
 Run `rivet --help` for the command list. Add `--help` or `-h` after `session`, `serve`, `doctor`, or `commands` to print that command's options.
 
@@ -24,7 +24,7 @@ These fixed limits apply to both native sessions and stdio:
 | --- | ---: |
 | Captured stdout per process | 2 MiB |
 | Captured stderr per process | 2 MiB |
-| File reads and replacement results | 4 MiB |
+| File reads, write content per call, and replacement results | 4 MiB |
 | Directory entries per listing | 1000 |
 | Concurrent managed processes | 8 |
 | Retained process entries, including running processes | 32 |
@@ -51,7 +51,7 @@ rivet serve \
   --allow-subcommand git=diff
 ```
 
-Repeat `--allow-command NAME=EXECUTABLE` for each program and `--allow-subcommand NAME=VALUE` for each permitted first argument. `EXECUTABLE` is resolved from `PATH`; a value containing a path separator is treated as a path. `--allow-any-args NAME` explicitly permits any arguments for that command, subject to path checks. Avoid it for shells and interpreters.
+Repeat `--allow-command NAME=EXECUTABLE` for each program and `--allow-subcommand NAME=VALUE` for each permitted first argument. `EXECUTABLE` is resolved from `PATH`; a value containing a path separator is treated as a path. `--allow-any-args NAME` explicitly permits any arguments for that command. Stdio mode checks argument paths; native mode relies on the OS sandbox for filesystem access. Allowing a shell or interpreter with unrestricted arguments permits execution of code supplied in those arguments.
 
 Native sessions accept the same command flags and otherwise offer interactive command selection. Rivet passes arguments directly to the executable; it does not invoke a shell or interactive terminal. Restart with different flags to change the scope.
 

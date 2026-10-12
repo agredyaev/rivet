@@ -1,6 +1,6 @@
 # Performance measurements
 
-Performance numbers are not checked in as release guarantees. Rivet's latency and memory use depend on the host, toolchain, filesystem, sandbox backend, and build profile. Measure the exact binary you plan to compare.
+Measure the exact binary you plan to compare. Record the host, Rust toolchain, filesystem, build profile, and command scope with the results.
 
 ## Release build
 
@@ -21,6 +21,8 @@ The harness reports JSON containing:
 - median `run_command` submission latency across 21 commands.
 
 `run_command` latency measures submission only. The harness waits for each submitted process to complete before starting the next measured submission, so the process-capacity limit does not contaminate the result.
+
+The harness launches `rivet serve` over direct stdio. It does not measure the native tunnel, ChatGPT round trips, or OS-sandboxed command startup.
 
 ## Profiling build
 
