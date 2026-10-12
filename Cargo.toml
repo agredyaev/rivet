@@ -2,19 +2,20 @@
 name = "rivet"
 version = "0.3.0"
 edition = "2024"
+license = "MIT"
 
 [dependencies]
 bytes = "=1.12.1"
 cap-std = "=4.0.3"
 httpdate = "=1.0.3"
-libc = "=0.2.176"
-rmcp = { version = "=3.4.1", default-features = false, features = ["server", "macros", "transport-io"] }
-reqwest = { version = "=0.12.28", default-features = false, features = ["rustls-tls", "http2"] }
-schemars = "=1.0.4"
-serde = { version = "=1.0.228", features = ["derive"] }
-serde_json = { version = "=1.0.145", features = ["raw_value"] }
-sha2 = "=0.10.9"
-tokio = { version = "=1.47.1", features = ["rt", "macros", "io-std", "io-util", "process", "signal", "sync", "time"] }
+libc = "=0.2.190"
+rmcp = { version = "=3.5.1", default-features = false, features = ["server", "macros", "transport-io"] }
+reqwest = { version = "=0.13.5", default-features = false, features = ["rustls", "http2"] }
+schemars = "=1.2.2"
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.154", features = ["raw_value"] }
+sha2 = "=0.11.1"
+tokio = { version = "=1.53.2", features = ["rt", "macros", "io-std", "io-util", "process", "signal", "sync", "time"] }
 
 [profile.release]
 opt-level = "s"

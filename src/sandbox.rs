@@ -72,7 +72,11 @@ fn cache_root(workspace: &Path) -> PathBuf {
 
     let mut hash = Sha256::new();
     hash.update(workspace.as_os_str().as_bytes());
-    let digest = format!("{:x}", hash.finalize());
+    let digest = hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
     base.join(&digest[..16])
 }
 

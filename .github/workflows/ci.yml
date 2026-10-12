@@ -13,6 +13,21 @@ on:
   workflow_dispatch:
 
 jobs:
+  dependencies:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
+      - run: cargo install cargo-deny --version 0.20.2 --locked
+      - run: cargo install cargo-machete --version 0.9.2 --locked
+      - run: cargo deny --locked check
+      - run: cargo deny --locked --manifest-path fuzz/Cargo.toml --config deny.toml check
+      - run: cargo machete
+      - run: python3 tests/dependencies.py
+
   build:
     strategy:
       fail-fast: false
@@ -40,6 +55,10 @@ jobs:
       - run: cargo clippy --locked --all-targets -- -D warnings
       - run: cargo test --locked
       - run: cargo build --locked --release
+      - if: runner.os == 'macOS'
+        run: otool -L target/release/rivet
+      - if: runner.os == 'Linux'
+        run: readelf -d target/release/rivet
       - run: target/release/rivet --help && target/release/rivet serve --help
       - run: target/release/rivet doctor --root .
       - run: |
@@ -91,8 +110,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@89b12181fb390509a0842a86cc55eeb8eb928c1d # stable
         with:
           targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
-      - run: python3 -m pip install cargo-zigbuild==0.23.4
-      - run: cargo zigbuild --locked --release --target x86_64-unknown-linux-gnu --target aarch64-unknown-linux-gnu
+      - run: python3 -m pip install cargo-zigbuild==0.23.4 ziglang==0.17.0
+      - run: |
+          export PATH="$(python3 -c 'import pathlib, ziglang; print(pathlib.Path(ziglang.__file__).parent)'):$PATH"
+          test "$(zig version)" = "0.17.0"
+          cargo zigbuild --locked --release --target x86_64-unknown-linux-gnu --target aarch64-unknown-linux-gnu
       - run: |
           file target/x86_64-unknown-linux-gnu/release/rivet | grep -Eq 'ELF 64-bit.*x86-64'
           file target/aarch64-unknown-linux-gnu/release/rivet | grep -Eq 'ELF 64-bit.*ARM aarch64'
@@ -106,7 +128,7 @@ jobs:
           if-no-files-found: error
 
   release-artifacts:
-    needs: [build, cross, fuzz]
+    needs: [build, cross, fuzz, dependencies]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:
@@ -134,12 +156,13 @@ jobs:
             mkdir -p "$package_dir/bin"
             cp "$binary" "$package_dir/bin/$binary_name"
             chmod +x "$package_dir/bin/$binary_name"
+            cp LICENSE "$package_dir/LICENSE"
             (cd "$package_dir" && zip -qr "$GITHUB_WORKSPACE/dist/$asset" .)
             rm -rf "$package_dir"
 
             entries="$(unzip -Z1 "dist/$asset")"
             files="$(printf '%s\n' "$entries" | sed '/\/$/d')"
-            test "$files" = "bin/$binary_name"
+            test "$(printf '%s\n' "$files" | sort)" = "$(printf '%s\n' LICENSE "bin/$binary_name" | sort)"
             ! printf '%s\n' "$entries" | grep -Eq '(^|/)(scripts/|install\.sh$|install\.ps1$)'
           }
 

@@ -3,14 +3,15 @@ name = "rivet-fuzz"
 version = "0.0.0"
 publish = false
 edition = "2024"
+license = "MIT"
 
 [package.metadata]
 cargo-fuzz = true
 
 [dependencies]
 arbitrary = "=1.5.0"
-libfuzzer-sys = "0.4"
-serde_json = "=1.0.145"
+libfuzzer-sys = "=0.4.13"
+serde_json = "=1.0.154"
 rivet = { path = ".." }
 
 [[bin]]
