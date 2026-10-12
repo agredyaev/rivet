@@ -13,7 +13,34 @@ on:
   workflow_dispatch:
 
 jobs:
+  mode:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+      actions: read
+    outputs:
+      release_only: ${{ steps.mode.outputs.release_only }}
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - run: python3 tests/ci_mode.py
+      - name: Select full checks or release build
+        id: mode
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          EVENT: ${{ github.event_name }}
+          PR_BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          set -euo pipefail
+          base="${PR_BASE:-$(git rev-parse HEAD^1)}"
+          python3 scripts/ci_mode.py --base "$base" --repo "$GH_REPO" --event "$EVENT"
+
   dependencies:
+    needs: mode
+    if: ${{ needs.mode.outputs.release_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
@@ -29,6 +56,7 @@ jobs:
       - run: python3 tests/dependencies.py
 
   build:
+    needs: mode
     strategy:
       fail-fast: false
       matrix:
@@ -51,9 +79,12 @@ jobs:
             /etc/apparmor.d/bwrap-userns-restrict
           sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
           bwrap --unshare-user --unshare-net --ro-bind / / /usr/bin/true
-      - run: cargo fmt --check
-      - run: cargo clippy --locked --all-targets -- -D warnings
-      - run: cargo test --locked
+      - if: needs.mode.outputs.release_only != 'true'
+        run: cargo fmt --check
+      - if: needs.mode.outputs.release_only != 'true'
+        run: cargo clippy --locked --all-targets -- -D warnings
+      - if: needs.mode.outputs.release_only != 'true'
+        run: cargo test --locked
       - run: cargo build --locked --release
       - if: runner.os == 'macOS'
         run: otool -L target/release/rivet
@@ -82,6 +113,8 @@ jobs:
           if-no-files-found: error
 
   fuzz:
+    needs: mode
+    if: ${{ needs.mode.outputs.release_only != 'true' }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -130,7 +163,14 @@ jobs:
           if-no-files-found: error
 
   release-artifacts:
-    needs: [build, cross, fuzz, dependencies]
+    needs: [mode, build, cross, fuzz, dependencies]
+    if: >-
+      ${{ always() && !cancelled() && needs.mode.result == 'success'
+          && needs.build.result == 'success' && needs.cross.result == 'success'
+          && ((needs.mode.outputs.release_only == 'true'
+               && needs.dependencies.result == 'skipped' && needs.fuzz.result == 'skipped')
+              || (needs.mode.outputs.release_only != 'true'
+                  && needs.dependencies.result == 'success' && needs.fuzz.result == 'success')) }}
     runs-on: ubuntu-latest
     timeout-minutes: 5
     permissions:

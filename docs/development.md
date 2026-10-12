@@ -12,6 +12,7 @@ cargo build --locked --release
 python3 tests/smoke.py target/release/rivet
 python3 tests/install_smoke.py
 python3 tests/cli_ui.py target/release/rivet
+python3 tests/ci_mode.py
 ```
 
 ## Dependency checks
@@ -42,7 +43,7 @@ will not appear in those lists.
 
 ## Fuzzing
 
-Release CI fuzzes the critical untrusted-input and bounded-state boundaries with seven production-backed targets:
+Full CI fuzzes the critical untrusted-input and bounded-state boundaries with seven production-backed targets:
 
 - `tunnel_wire`: malformed tunnel poll/command JSON, timeout parsing, JSON-RPC IDs, and tunnel IDs. A committed seed corpus and dictionary drive deep parser paths.
 - `tunnel_wire_structured`: valid generated tunnel commands with semantic invariants for correlation fields, command types, timeouts, future fields, JSON-RPC IDs, and tunnel IDs.
@@ -62,7 +63,7 @@ cargo +nightly fuzz run mcp_wire -- -max_total_time=20 -timeout=2 -dict=fuzz/dic
 cargo +nightly fuzz run output_buffer -- -max_total_time=20 -timeout=2
 ```
 
-CI runs every target for 10 seconds before release artifacts are packaged. Committed seed corpora live under `fuzz/corpus/`; generated corpus growth, build output, and crash artifacts remain untracked.
+Full CI runs every target for 10 seconds before release artifacts are packaged. Version-only release CI reuses these checks from a successful full run on its baseline commit. Committed seed corpora live under `fuzz/corpus/`; generated corpus growth, build output, and crash artifacts remain untracked.
 
 ## Clippy
 
@@ -90,7 +91,13 @@ With Zig installed through zvm, use `zvm install --nomirror 0.17.0` and prepend 
 
 Use `fix:`, `perf:`, or `refactor:` for a patch release, `feat:` for a minor release, and `!` or `BREAKING CHANGE:` for a breaking release. After changes reach `main`, release-please opens a release PR and updates `Cargo.toml`, `Cargo.lock`, the version manifest, and `CHANGELOG.md`. Merge that PR to create the GitHub Release. Do not edit the package version by hand.
 
-CI audits dependencies, builds, tests, fuzzes, cross-builds, verifies binary architectures, and packages the release artifacts before publication. The release workflow requires the tag to equal `v<Cargo.toml version>` and requires a successful CI run whose `head_sha` exactly matches the release tag commit. It downloads that run's `rivet-release-assets` artifact, rejects any file outside the three supported platform ZIPs plus `SHA256SUMS`, verifies the checksums, and uploads those exact files to the GitHub Release. CI reads `<VERSION>` from Cargo.toml; publication checks it against the tag. Each ZIP contains `bin/rivet` and `LICENSE`. `SHA256SUMS` keeps its name and lists the versioned ZIPs. It does not rebuild release binaries. To republish assets for an existing release, run the `Release` workflow manually with that tag.
+Source and dependency changes run full CI: dependency audits, formatting, Clippy, tests, fuzzing, native builds, cross-builds, architecture checks, smoke checks, and archive packaging.
+
+A version-only release runs builds and smoke checks without repeating formatting, Clippy, the Rust test suite, dependency audits, or fuzzing. CI allows this mode only when the diff from the first parent on `main` (or the PR base for a pull request) changes the root package version in `Cargo.toml` and `Cargo.lock`, the root release-manifest version, and optionally `CHANGELOG.md` or the matching root-package version in `fuzz/Cargo.lock`. All other content, dependencies, and file modes must remain unchanged. The version must increase and match across the required files.
+
+The baseline must have a successful full `push` CI run on `main`, including both native builds, cross-builds, dependency audits, fuzzing, and archive packaging. CI records the reused run and commit in the workflow summary. A missing baseline, incomplete checks, or a GitHub API lookup failure selects full CI. Manual `workflow_dispatch` runs always execute full checks. Release builds compile the new package version, so `rivet --version` and the archive names match the release.
+
+Packaging requires successful builds and smoke checks plus either completed full checks or the verified reuse decision. The release workflow requires the tag to equal `v<Cargo.toml version>` and requires a successful CI run whose `head_sha` exactly matches the release tag commit. It downloads that run's `rivet-release-assets` artifact, rejects any file outside the three supported platform ZIPs plus `SHA256SUMS`, verifies the checksums, and uploads those exact files to the GitHub Release. CI reads `<VERSION>` from Cargo.toml; publication checks it against the tag. Each ZIP contains `bin/rivet` and `LICENSE`. `SHA256SUMS` keeps its name and lists the versioned ZIPs. It does not rebuild release binaries. To republish assets for an existing release, run the `Release` workflow manually with that tag.
 
 Release Please uses `GITHUB_TOKEN`, so its generated release PR does not start a separate `pull_request` workflow. Source changes must pass CI before they reach `main`.
 
