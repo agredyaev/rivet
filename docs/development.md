@@ -20,7 +20,7 @@ The untrusted tunnel wire boundary is fuzzed with `fuzz/fuzz_targets/tunnel_wire
 cargo +nightly fuzz run tunnel_wire -- -max_total_time=10 -timeout=2
 ```
 
-CI runs the same bounded smoke before release artifacts are packaged. Fuzz build output, corpus, and artifacts are generated locally and are not committed.
+CI runs the same 10-second bounded fuzz target before release artifacts are packaged. Fuzz build output, corpus, and crash artifacts are generated locally and are not committed.
 
 ## Clippy
 
@@ -42,9 +42,11 @@ The CI workflow runs native builds and smoke tests on macOS and Linux, plus cros
 
 ## Releases
 
-Use `fix:`, `perf:`, or `refactor:` for a patch release, `feat:` for a minor release, and `!` or `BREAKING CHANGE:` for a breaking release. After changes reach `main`, release-please opens a release PR and updates `Cargo.toml`, `Cargo.lock`, the version manifest, and `CHANGELOG.md`. Merge that PR to create the GitHub Release; the same workflow then builds and uploads the platform archives and `SHA256SUMS`. Do not edit the package version by hand. To rebuild assets for an existing release, run the `Release` workflow manually with its tag.
+Use `fix:`, `perf:`, or `refactor:` for a patch release, `feat:` for a minor release, and `!` or `BREAKING CHANGE:` for a breaking release. After changes reach `main`, release-please opens a release PR and updates `Cargo.toml`, `Cargo.lock`, the version manifest, and `CHANGELOG.md`. Merge that PR to create the GitHub Release. Do not edit the package version by hand.
 
-Release Please uses `GITHUB_TOKEN`, so its generated release PR does not start a separate `pull_request` workflow. Source changes run the full CI before reaching `main`; the release workflow builds all release targets from the generated tag. If repository rules later require CI checks directly on release PRs, configure a repository secret token for the action.
+CI builds, tests, fuzzes, cross-builds, verifies binary architectures, and packages the release artifacts before publication. The release workflow requires the tag to equal `v<Cargo.toml version>` and requires a successful CI run whose `head_sha` exactly matches the release tag commit. It downloads that run's `rivet-release-assets` artifact, rejects any file outside the three supported platform ZIPs plus `SHA256SUMS`, verifies the checksums, and uploads those exact files to the GitHub Release. It does not rebuild release binaries. To republish assets for an existing release, run the `Release` workflow manually with that tag.
+
+Release Please uses `GITHUB_TOKEN`, so its generated release PR does not start a separate `pull_request` workflow. Source changes must pass CI before they reach `main`.
 
 ## Profiling
 
@@ -55,4 +57,4 @@ cargo build --locked --profile profiling
 python3 tests/measure.py target/profiling/rivet --calls 100000 --sample rivet-profile.txt
 ```
 
-The measurement script prints JSON with startup latency, idle RSS/CPU when the host permits process inspection, total wall-clock time, and per-call medians. Restricted environments report RSS/CPU as unavailable. CPU sampling adds overhead; compare unsampled runs on the same host when measuring elapsed time. See [measurements](measurements.md) for the recorded environment and results.
+The measurement script prints JSON with startup latency, idle RSS/CPU when the host permits process inspection, total wall-clock time, and per-call medians. Restricted environments report RSS/CPU as unavailable. CPU sampling adds overhead; compare unsampled runs on the same host when measuring elapsed time. See the [measurement procedure](measurements.md) for the exact workload and comparison rules.

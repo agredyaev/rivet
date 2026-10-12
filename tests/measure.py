@@ -78,7 +78,46 @@ allow_override = []
         after_reads = process_stats()
         if profile:
             assert profile.wait(timeout=15) == 0
-        commands = [tool(300 + i, "run_command", {"command": "echo", "args": ["ok"], "cwd": tmp}) for i in range(21)]
+        wait_call_id = 1_000_000
+
+        def submit_and_wait(number):
+            nonlocal wait_call_id
+            request = {
+                "jsonrpc": "2.0",
+                "id": number,
+                "method": "tools/call",
+                "params": {
+                    "name": "run_command",
+                    "arguments": {"command": "echo", "args": ["ok"], "cwd": tmp},
+                },
+            }
+            start = time.perf_counter_ns()
+            proc.stdin.write((json.dumps(request) + "\n").encode())
+            proc.stdin.flush()
+            reply = json.loads(proc.stdout.readline())
+            assert reply["id"] == number and not reply["result"].get("isError"), reply
+            submit_ms = (time.perf_counter_ns() - start) / 1_000_000
+            process_id = reply["result"]["structuredContent"]["process_id"]
+
+            for _ in range(200):
+                wait_call_id += 1
+                snapshot_request = {
+                    "jsonrpc": "2.0",
+                    "id": wait_call_id,
+                    "method": "tools/call",
+                    "params": {"name": "list_processes", "arguments": {}},
+                }
+                proc.stdin.write((json.dumps(snapshot_request) + "\n").encode())
+                proc.stdin.flush()
+                snapshot_reply = json.loads(proc.stdout.readline())
+                assert snapshot_reply["id"] == wait_call_id
+                snapshot = snapshot_reply["result"]["structuredContent"]
+                if any(row["process_id"] == process_id for row in snapshot["completed"]):
+                    return submit_ms
+                time.sleep(.005)
+            raise AssertionError(f"process {process_id} did not complete")
+
+        commands = [submit_and_wait(300 + i) for i in range(21)]
         proc.stdin.close()
         assert proc.wait(timeout=10) == 0
         print(json.dumps({

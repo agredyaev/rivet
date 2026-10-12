@@ -1,3 +1,5 @@
 /target/
 /rivet.toml
+__pycache__/
+*.pyc
 .DS_Store

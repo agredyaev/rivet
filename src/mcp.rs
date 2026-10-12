@@ -2,7 +2,7 @@
 //!
 //! Handlers delegate command, filesystem, and process policy to their modules
 //! and convert the results into MCP responses.
-use crate::{commands::CommandRequest, config::Config, filesystem, process::ProcessTable};
+use crate::{commands::CommandRequest, config::Config, filesystem, process::ProcessTable, profile};
 use rmcp::{
     RoleServer, ServiceExt,
     handler::server::router::tool::ToolRouter,
@@ -17,13 +17,13 @@ use rmcp::{
     transport::OneshotTransport,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json};
+use serde_json::{Value, json, value::RawValue};
 use std::{
-    collections::BTreeMap,
     io,
     pin::Pin,
     sync::{Arc, LazyLock, Mutex},
     task::{Context, Poll},
+    time::Instant,
 };
 use tokio::io::{AsyncRead, ReadBuf};
 
@@ -67,54 +67,119 @@ fn result(value: Result<Value, Fault>) -> CallToolResult {
 }
 
 #[derive(Clone)]
-struct Rivet {
+pub(crate) struct Rivet {
     config: Arc<Config>,
     processes: Arc<ProcessTable>,
     mutation: Arc<Mutex<()>>,
 }
 
-#[derive(Clone)]
-pub(crate) struct Runtime {
-    server: Arc<Rivet>,
-    processes: Arc<ProcessTable>,
-}
-
 pub(crate) enum Dispatch {
-    Response(Vec<u8>),
+    Response(Box<RawValue>),
     NotificationAck,
 }
 
-impl Runtime {
+impl Rivet {
     pub(crate) fn new(config: Arc<Config>) -> Self {
-        let processes = Arc::new(ProcessTable::new());
+        let processes = Arc::new(ProcessTable::new(&config));
         Self {
-            server: Arc::new(Rivet {
-                config,
-                processes: processes.clone(),
-                mutation: Arc::new(Mutex::new(())),
-            }),
+            config,
             processes,
+            mutation: Arc::new(Mutex::new(())),
         }
     }
 
+    #[cfg(test)]
     pub(crate) async fn dispatch_jsonrpc(&self, input: &[u8]) -> Result<Dispatch, String> {
+        self.dispatch_jsonrpc_profiled(input, None).await
+    }
+
+    pub(crate) async fn dispatch_jsonrpc_profiled(
+        &self,
+        input: &[u8],
+        profile_seq: Option<u64>,
+    ) -> Result<Dispatch, String> {
+        let profiling = profile::enabled();
+        let total_started = profiling.then(Instant::now);
+        let rss_before_bytes = profile::self_current_rss_bytes();
+        let decode_started = profiling.then(Instant::now);
         let message: ClientJsonRpcMessage = serde_json::from_slice(input)
             .map_err(|error| format!("invalid MCP JSON-RPC: {error}"))?;
+        let decode_us = decode_started
+            .as_ref()
+            .map(|started| started.elapsed().as_micros());
+
         match message {
             ClientJsonRpcMessage::Request(request) => {
+                let setup_started = profiling.then(Instant::now);
                 let (transport, mut receiver) =
                     OneshotTransport::<RoleServer>::new(ClientJsonRpcMessage::Request(request));
                 let service =
-                    serve_directly::<RoleServer, _, _, _, _>(self.server.clone(), transport, None);
+                    serve_directly::<RoleServer, _, _, _, _>(self.clone(), transport, None);
+                let service_setup_us = setup_started
+                    .as_ref()
+                    .map(|started| started.elapsed().as_micros());
+
+                let response_wait_started = profiling.then(Instant::now);
                 let response = receiver
                     .recv()
                     .await
                     .ok_or("MCP service closed without a response")?;
-                let bytes = serde_json::to_vec(&response).map_err(|error| error.to_string())?;
+                let response_wait_us = response_wait_started
+                    .as_ref()
+                    .map(|started| started.elapsed().as_micros());
+
+                let serialize_started = profiling.then(Instant::now);
+                let raw = serde_json::value::to_raw_value(&response)
+                    .map_err(|error| error.to_string())?;
+                let serialize_us = serialize_started
+                    .as_ref()
+                    .map(|started| started.elapsed().as_micros());
+
+                let service_wait_started = profiling.then(Instant::now);
                 let _ = service.waiting().await;
-                Ok(Dispatch::Response(bytes))
+                let service_wait_us = service_wait_started
+                    .as_ref()
+                    .map(|started| started.elapsed().as_micros());
+
+                profile::event(|| {
+                    json!({
+                        "event": "mcp_dispatch",
+                        "seq": profile_seq,
+                        "request_bytes": input.len(),
+                        "response_bytes": raw.get().len(),
+                        "decode_us": decode_us,
+                        "service_setup_us": service_setup_us,
+                        "response_wait_us": response_wait_us,
+                        "serialize_us": serialize_us,
+                        "service_wait_us": service_wait_us,
+                        "total_us": total_started
+                            .as_ref()
+                            .map(|started| started.elapsed().as_micros()),
+                        "self_rss_before_bytes": rss_before_bytes,
+                        "self_rss_after_bytes": profile::self_current_rss_bytes(),
+                        "self_peak_rss_bytes": profile::self_peak_rss_bytes(),
+                        "children_peak_rss_bytes": profile::children_peak_rss_bytes()
+                    })
+                });
+                Ok(Dispatch::Response(raw))
             }
-            ClientJsonRpcMessage::Notification(_) => Ok(Dispatch::NotificationAck),
+            ClientJsonRpcMessage::Notification(_) => {
+                profile::event(|| {
+                    json!({
+                        "event": "mcp_dispatch",
+                        "seq": profile_seq,
+                        "request_bytes": input.len(),
+                        "response_bytes": 0,
+                        "decode_us": decode_us,
+                        "total_us": total_started
+                            .as_ref()
+                            .map(|started| started.elapsed().as_micros()),
+                        "kind": "notification",
+                        "self_peak_rss_bytes": profile::self_peak_rss_bytes()
+                    })
+                });
+                Ok(Dispatch::NotificationAck)
+            }
             _ => Err("unsupported inbound MCP JSON-RPC message".into()),
         }
     }
@@ -127,38 +192,18 @@ impl Runtime {
 // Build the route table once instead of reconstructing it for each request.
 static ROUTER: LazyLock<ToolRouter<Rivet>> = LazyLock::new(Rivet::tool_router);
 
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct RunCommandRequest {
-    command: String,
-    #[serde(default)]
-    args: Vec<String>,
-    cwd: String,
-    timeout_ms: Option<u64>,
-    #[serde(default)]
-    env: BTreeMap<String, String>,
-    wait_ms: Option<u64>,
-    output_limit: Option<usize>,
-}
-
-impl RunCommandRequest {
-    fn into_command(self) -> CommandRequest {
-        CommandRequest {
-            command: self.command,
-            args: self.args,
-            cwd: self.cwd,
-            timeout_ms: self.timeout_ms,
-            env: self.env,
-        }
-    }
-}
+const SERVER_INSTRUCTIONS: &str = "Batch independent operations. Submit long-running commands asynchronously and continue independent work instead of polling repeatedly. Use list_processes for process state and read_process_output only when captured output is required. Keep substantial work in bounded phases and return a concise checkpoint between phases. Do not build readiness queues, completion cursors, or custom polling protocols on top of Rivet.";
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct RunCommandsRequest {
     commands: Vec<CommandRequest>,
-    wait_ms: Option<u64>,
-    output_limit: Option<usize>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ReadFilesRequest {
+    files: Vec<filesystem::ReadRequest>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -168,14 +213,6 @@ struct ProcessOutputRequest {
     stdout_offset: Option<u64>,
     stderr_offset: Option<u64>,
     limit: Option<usize>,
-    wait_ms: Option<u64>,
-}
-#[derive(Deserialize, JsonSchema)]
-#[serde(deny_unknown_fields)]
-struct ReadyProcessesRequest {
-    after_sequence: Option<u64>,
-    limit: Option<usize>,
-    output_limit: Option<usize>,
 }
 
 #[derive(Deserialize, JsonSchema)]
@@ -209,61 +246,22 @@ impl Rivet {
             .config
             .commands
             .iter()
-            .map(|(name, entry)| {
-                if entry.allow_any_args {
-                    json!({"name": name, "allow_any_args": true})
-                } else {
-                    json!({"name": name, "allowed_subcommands": entry.allowed_subcommands})
+            .map(|entry| match &entry.allowed_subcommands {
+                None => json!({"name": entry.name, "allow_any_args": true}),
+                Some(allowed_subcommands) => {
+                    json!({"name": entry.name, "allowed_subcommands": allowed_subcommands})
                 }
             })
             .collect();
         result(Ok(json!({"commands": commands})))
     }
 
-    #[tool(
-        description = "Run a registered command. Fast commands complete inline; slower commands return a managed process handle."
-    )]
-    async fn run_command(
-        &self,
-        Parameters(request): Parameters<RunCommandRequest>,
-    ) -> CallToolResult {
-        let max_output = self
-            .config
-            .limits
-            .max_stdout_bytes
-            .max(self.config.limits.max_stderr_bytes);
-        let wait_ms = request.wait_ms.unwrap_or(250);
-        if wait_ms > 5_000 {
-            return result(Err(Fault::new(
-                "INVALID_REQUEST",
-                "wait_ms must not exceed 5000",
-            )));
-        }
-        let output_limit = match request.output_limit {
-            Some(value) if value == 0 || value > max_output => {
-                return result(Err(Fault::new(
-                    "INVALID_REQUEST",
-                    "output_limit is outside configured bounds",
-                )));
-            }
-            Some(value) => value,
-            None => (64 * 1024).min(max_output),
-        };
-        result(
-            self.processes
-                .submit(
-                    self.config.clone(),
-                    request.into_command(),
-                    wait_ms,
-                    output_limit,
-                )
-                .await,
-        )
+    #[tool(description = "Submit a registered command and return its managed process ID")]
+    async fn run_command(&self, Parameters(request): Parameters<CommandRequest>) -> CallToolResult {
+        result(self.processes.submit(&self.config, request).await)
     }
 
-    #[tool(
-        description = "Run up to 8 independent registered commands concurrently inside one MCP request."
-    )]
+    #[tool(description = "Submit up to 8 independent registered commands in one MCP request.")]
     async fn run_commands(
         &self,
         Parameters(request): Parameters<RunCommandsRequest>,
@@ -274,102 +272,51 @@ impl Rivet {
                 "commands must contain between 1 and 8 entries",
             )));
         }
-        let max_output = self
-            .config
-            .limits
-            .max_stdout_bytes
-            .max(self.config.limits.max_stderr_bytes);
-        let wait_ms = request.wait_ms.unwrap_or(250);
-        if wait_ms > 5_000 {
-            return result(Err(Fault::new(
-                "INVALID_REQUEST",
-                "wait_ms must not exceed 5000",
-            )));
-        }
-        let output_limit = match request.output_limit {
-            Some(value) if value == 0 || value > max_output => {
-                return result(Err(Fault::new(
-                    "INVALID_REQUEST",
-                    "output_limit is outside configured bounds",
-                )));
-            }
-            Some(value) => value,
-            None => (64 * 1024).min(max_output),
-        };
-        let count = request.commands.len();
-        let mut tasks = tokio::task::JoinSet::new();
-        for (index, command) in request.commands.into_iter().enumerate() {
-            let processes = self.processes.clone();
-            let config = self.config.clone();
-            tasks.spawn(async move {
-                (
-                    index,
-                    processes
-                        .submit(config, command, wait_ms, output_limit)
-                        .await,
-                )
-            });
-        }
-        let mut rows = vec![Value::Null; count];
-        while let Some(joined) = tasks.join_next().await {
-            let (index, value) = match joined {
-                Ok(value) => value,
-                Err(_) => {
-                    return result(Err(Fault::new("IO_ERROR", "command worker failed")));
-                }
-            };
-            rows[index] = match value {
+
+        let batch_started = profile::enabled().then(Instant::now);
+        let rss_before_bytes = profile::self_current_rss_bytes();
+        let mut rows = Vec::with_capacity(request.commands.len());
+        for command in request.commands {
+            rows.push(match self.processes.submit(&self.config, command).await {
                 Ok(value) => json!({"ok": true, "result": value}),
                 Err(error) => json!({
                     "ok": false,
                     "error": serde_json::to_value(error).expect("serializable error")
                 }),
-            };
+            });
         }
+
+        profile::event(|| {
+            json!({
+                "event": "run_commands",
+                "count": rows.len(),
+                "total_us": batch_started.map(|started| started.elapsed().as_micros()),
+                "self_rss_before_bytes": rss_before_bytes,
+                "self_rss_after_bytes": profile::self_current_rss_bytes(),
+                "self_peak_rss_bytes": profile::self_peak_rss_bytes(),
+                "children_peak_rss_bytes": profile::children_peak_rss_bytes()
+            })
+        });
         result(Ok(json!({"results": rows})))
     }
 
-    #[tool(description = "Start a registered long-running process")]
-    fn start_process(&self, Parameters(request): Parameters<CommandRequest>) -> CallToolResult {
-        result(self.processes.start(self.config.clone(), request))
+    #[tool(description = "Start a registered interactive process and return its process ID")]
+    async fn start_process(
+        &self,
+        Parameters(request): Parameters<CommandRequest>,
+    ) -> CallToolResult {
+        result(self.processes.start(&self.config, request).await)
     }
 
     #[tool(
-        description = "List retained managed processes for recovery after an interrupted request"
+        description = "Return one snapshot of all retained running and completed managed processes"
     )]
     fn list_processes(&self) -> CallToolResult {
-        result(Ok(self.processes.list()))
+        result(Ok(self.processes.list(&self.config)))
     }
 
-    #[tool(
-        description = "List completed managed processes by completion sequence without consuming them"
-    )]
-    fn list_ready_processes(
-        &self,
-        Parameters(request): Parameters<ReadyProcessesRequest>,
-    ) -> CallToolResult {
-        let max_output = self
-            .config
-            .limits
-            .max_stdout_bytes
-            .max(self.config.limits.max_stderr_bytes);
-        result(
-            self.processes.ready(
-                request.after_sequence.unwrap_or(0),
-                request
-                    .limit
-                    .unwrap_or(self.config.limits.max_running_processes),
-                request.output_limit.unwrap_or(0),
-                self.config.limits.max_running_processes,
-                max_output,
-            ),
-        )
-    }
-
-    #[tool(
-        description = "Read bounded process output, optionally waiting for new output or completion."
-    )]
-    async fn read_process_output(
+    #[tool(description = "Read bounded captured stdout and stderr for one process")]
+    fn read_process_output(
         &self,
         Parameters(request): Parameters<ProcessOutputRequest>,
     ) -> CallToolResult {
@@ -378,18 +325,13 @@ impl Rivet {
             .limits
             .max_stdout_bytes
             .max(self.config.limits.max_stderr_bytes);
-        result(
-            self.processes
-                .read_wait(
-                    request.process_id,
-                    request.stdout_offset.unwrap_or(0),
-                    request.stderr_offset.unwrap_or(0),
-                    request.limit.unwrap_or(max),
-                    max,
-                    request.wait_ms.unwrap_or(0),
-                )
-                .await,
-        )
+        result(self.processes.read(
+            request.process_id,
+            request.stdout_offset.unwrap_or(0),
+            request.stderr_offset.unwrap_or(0),
+            request.limit.unwrap_or(max),
+            max,
+        ))
     }
 
     #[tool(description = "Send bounded UTF-8 text to process stdin")]
@@ -443,6 +385,50 @@ impl Rivet {
         )
     }
 
+    #[tool(description = "Read up to 8 bounded UTF-8 file slices in one MCP request")]
+    async fn read_files(
+        &self,
+        Parameters(request): Parameters<ReadFilesRequest>,
+    ) -> CallToolResult {
+        if request.files.is_empty() || request.files.len() > 8 {
+            return result(Err(Fault::new(
+                "INVALID_REQUEST",
+                "files must contain between 1 and 8 entries",
+            )));
+        }
+
+        let max_total = self.config.limits.max_file_read_bytes;
+        let total_limit = request.files.iter().try_fold(0_usize, |total, request| {
+            total.checked_add(request.limit.unwrap_or(max_total))
+        });
+        if total_limit.is_none_or(|total| total > max_total) {
+            return result(Err(Fault::new(
+                "INVALID_REQUEST",
+                "total read limit exceeds max_file_read_bytes",
+            )));
+        }
+
+        let config = self.config.clone();
+        result(
+            tokio::task::spawn_blocking(move || {
+                let rows = request
+                    .files
+                    .into_iter()
+                    .map(|request| match filesystem::read(&config, request) {
+                        Ok(value) => json!({"ok": true, "result": value}),
+                        Err(error) => json!({
+                            "ok": false,
+                            "error": serde_json::to_value(error).expect("serializable error")
+                        }),
+                    })
+                    .collect::<Vec<_>>();
+                Ok(json!({"results": rows}))
+            })
+            .await
+            .unwrap_or_else(|_| Err(Fault::new("IO_ERROR", "file batch worker failed"))),
+        )
+    }
+
     #[tool(description = "Create, overwrite, or append bounded UTF-8 text")]
     async fn write_file(
         &self,
@@ -481,14 +467,16 @@ impl Rivet {
 #[tool_handler(router = ROUTER)]
 impl rmcp::ServerHandler for Rivet {
     fn get_info(&self) -> ServerConfig {
-        ServerConfig::new(ServerCapabilities::builder().enable_tools().build()).with_server_info(
-            Implementation::new("rivet", env!("CARGO_PKG_VERSION"))
-                .with_title("Rivet")
-                .with_description(
-                    "Local MCP server for configured commands and allowed filesystem roots.",
-                )
-                .with_website_url("https://github.com/agredyaev/rivet"),
-        )
+        ServerConfig::new(ServerCapabilities::builder().enable_tools().build())
+            .with_server_info(
+                Implementation::new("rivet", env!("CARGO_PKG_VERSION"))
+                    .with_title("Rivet")
+                    .with_description(
+                        "Local MCP server for configured commands and allowed filesystem roots.",
+                    )
+                    .with_website_url("https://github.com/agredyaev/rivet"),
+            )
+            .with_instructions(SERVER_INSTRUCTIONS)
     }
 }
 
@@ -537,7 +525,8 @@ impl<R: AsyncRead + Unpin> AsyncRead for LineLimited<R> {
 }
 
 pub async fn serve(config: Arc<Config>) -> Result<(), String> {
-    let runtime = Runtime::new(config.clone());
+    let runtime = Rivet::new(config.clone());
+    let processes = runtime.processes.clone();
     let cap = config
         .limits
         .max_file_read_bytes
@@ -550,14 +539,11 @@ pub async fn serve(config: Arc<Config>) -> Result<(), String> {
         cap,
     };
     let service = runtime
-        .server
-        .as_ref()
-        .clone()
         .serve((input, tokio::io::stdout()))
         .await
         .map_err(|e| e.to_string())?;
     let ended = service.waiting().await.map_err(|e| e.to_string());
-    runtime.shutdown().await;
+    processes.shutdown().await;
     ended.map(|_| ())
 }
 
@@ -614,18 +600,19 @@ allow_override = []
     #[tokio::test]
     async fn direct_stateless_tools_list_uses_same_router() {
         let (config, root) = direct_config();
-        let runtime = Runtime::new(config);
+        let runtime = Rivet::new(config);
         let request = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
         let response = runtime.dispatch_jsonrpc(request).await.unwrap();
-        let Dispatch::Response(bytes) = response else {
+        let Dispatch::Response(raw) = response else {
             panic!("tools/list must return a terminal response");
         };
-        let value: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        let value: serde_json::Value = serde_json::from_str(raw.get()).unwrap();
         let tools = value["result"]["tools"].as_array().unwrap();
         assert!(tools.iter().any(|tool| tool["name"] == "run_command"));
-        assert!(tools.iter().any(|tool| tool["name"] == "run_commands"));
+        assert!(tools.iter().any(|tool| tool["name"] == "read_files"));
+        assert!(tools.iter().any(|tool| tool["name"] == "list_processes"));
         assert!(
-            tools
+            !tools
                 .iter()
                 .any(|tool| tool["name"] == "list_ready_processes")
         );
@@ -634,9 +621,74 @@ allow_override = []
     }
 
     #[tokio::test]
+    async fn direct_read_files_preserves_results_and_total_bound() {
+        let (config, root) = direct_config();
+        fs::write(root.join("a.txt"), "alpha").unwrap();
+        fs::write(root.join("b.txt"), "bravo").unwrap();
+        let runtime = Rivet::new(config);
+
+        let request = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "read_files",
+                "arguments": {
+                    "files": [
+                        {"path": root.join("a.txt"), "offset": 0, "limit": 5},
+                        {"path": root.join("b.txt"), "offset": 1, "limit": 3}
+                    ]
+                }
+            }
+        }))
+        .unwrap();
+        let response = runtime.dispatch_jsonrpc(&request).await.unwrap();
+        let Dispatch::Response(raw) = response else {
+            panic!("read_files must return a terminal response");
+        };
+        let value: serde_json::Value = serde_json::from_str(raw.get()).unwrap();
+        let rows = value["result"]["structuredContent"]["results"]
+            .as_array()
+            .unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0]["ok"], true);
+        assert_eq!(rows[0]["result"]["text"], "alpha");
+        assert_eq!(rows[1]["ok"], true);
+        assert_eq!(rows[1]["result"]["text"], "rav");
+
+        let oversized = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "read_files",
+                "arguments": {
+                    "files": [
+                        {"path": root.join("a.txt"), "limit": 3000},
+                        {"path": root.join("b.txt"), "limit": 3000}
+                    ]
+                }
+            }
+        }))
+        .unwrap();
+        let response = runtime.dispatch_jsonrpc(&oversized).await.unwrap();
+        let Dispatch::Response(raw) = response else {
+            panic!("read_files bound failure must return a terminal response");
+        };
+        let value: serde_json::Value = serde_json::from_str(raw.get()).unwrap();
+        assert_eq!(
+            value["result"]["structuredContent"]["code"],
+            "INVALID_REQUEST"
+        );
+
+        runtime.shutdown().await;
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[tokio::test]
     async fn direct_notification_is_acknowledged_without_retained_session() {
         let (config, root) = direct_config();
-        let runtime = Runtime::new(config);
+        let runtime = Rivet::new(config);
         let notification = br#"{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}"#;
         assert!(matches!(
             runtime.dispatch_jsonrpc(notification).await.unwrap(),

@@ -5,7 +5,8 @@
 
 use crate::{
     config::Config,
-    mcp::{Dispatch, Runtime},
+    mcp::{Dispatch, Rivet},
+    profile,
 };
 use bytes::Bytes;
 use reqwest::{
@@ -14,15 +15,18 @@ use reqwest::{
     redirect::Policy,
 };
 use rivet::tunnel_wire::{
-    WireCommand, extract_jsonrpc_id, parse_command, parse_poll, parse_response_timeout,
-    valid_tunnel_id,
+    CommandType, WireCommand, extract_jsonrpc_id, parse_command, parse_poll,
+    parse_response_timeout, valid_tunnel_id,
 };
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
 use std::{
     env,
     io::{self, IsTerminal, Write},
-    sync::Arc,
+    sync::{
+        Arc,
+        atomic::{AtomicU64, Ordering},
+    },
     time::{Duration, SystemTime, UNIX_EPOCH},
 };
 use tokio::{
@@ -38,6 +42,7 @@ const POLL_TIMEOUT_MS: u64 = 15_000;
 const MAX_POLL_BODY_BYTES: usize = 4 * 1024 * 1024;
 const MAX_IN_FLIGHT: usize = 16;
 const RESPONSE_ATTEMPT_TIMEOUT: Duration = Duration::from_secs(20);
+static PROFILE_SEQ: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Serialize)]
 struct ResponseHeaders {
@@ -57,15 +62,9 @@ struct TunnelResponse<'a> {
     resp_type: &'static str,
 }
 
-#[derive(Clone)]
 struct Client {
-    inner: Arc<ClientInner>,
-}
-
-struct ClientInner {
     http: reqwest::Client,
-    base_url: String,
-    tunnel_id: String,
+    endpoint: String,
 }
 
 enum PostClass {
@@ -76,8 +75,46 @@ enum PostClass {
     Fail,
 }
 
+fn profile_rpc_label(
+    raw: &RawValue,
+    command: &WireCommand,
+) -> (Option<String>, Option<String>, Option<String>) {
+    if !profile::enabled() {
+        return (None, None, None);
+    }
+
+    #[derive(Deserialize)]
+    struct ProfileCommand {
+        #[serde(default)]
+        created_at: Option<String>,
+    }
+
+    let created_at = serde_json::from_str::<ProfileCommand>(raw.get())
+        .ok()
+        .and_then(|command| command.created_at);
+    let Some(jsonrpc) = command.jsonrpc.as_deref() else {
+        return (created_at, None, None);
+    };
+    let Ok(value) = serde_json::from_str::<Value>(jsonrpc.get()) else {
+        return (created_at, None, None);
+    };
+    let method = value
+        .get("method")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+    let tool = if method.as_deref() == Some("tools/call") {
+        value
+            .pointer("/params/name")
+            .and_then(Value::as_str)
+            .map(str::to_owned)
+    } else {
+        None
+    };
+    (created_at, method, tool)
+}
+
 impl Client {
-    fn new(base_url: String, tunnel_id: String, api_key: String) -> Result<Self, String> {
+    fn new(base_url: String, tunnel_id: String, api_key: String) -> Result<Arc<Self>, String> {
         let mut headers = HeaderMap::new();
         let mut authorization = HeaderValue::from_str(&format!("Bearer {api_key}"))
             .map_err(|_| "runtime API key cannot be represented as an HTTP header".to_owned())?;
@@ -111,27 +148,20 @@ impl Client {
             .build()
             .map_err(|error| error.to_string())?;
 
-        Ok(Self {
-            inner: Arc::new(ClientInner {
-                http,
-                base_url: base_url.trim_end_matches('/').to_owned(),
-                tunnel_id,
-            }),
-        })
+        Ok(Arc::new(Self {
+            http,
+            endpoint: format!("{}/v1/tunnels/{tunnel_id}", base_url.trim_end_matches('/')),
+        }))
     }
 
     fn url(&self, suffix: &str) -> String {
-        format!(
-            "{}/v1/tunnels/{}{}",
-            self.inner.base_url, self.inner.tunnel_id, suffix
-        )
+        format!("{}{suffix}", self.endpoint)
     }
 
     async fn validate(&self) -> Result<(), String> {
         let response = self
-            .inner
             .http
-            .get(self.url(""))
+            .get(&self.endpoint)
             .timeout(Duration::from_secs(10))
             .send()
             .await
@@ -145,9 +175,10 @@ impl Client {
         }
     }
 
-    async fn poll_loop(&self, runtime: Runtime) -> Result<(), String> {
+    async fn poll_loop(self: &Arc<Self>, runtime: Arc<Rivet>) -> Result<(), String> {
         let mut in_flight = JoinSet::new();
         let mut failures = 0_u32;
+        let poll_url = self.url("/poll");
 
         loop {
             while in_flight.len() >= MAX_IN_FLIGHT {
@@ -160,12 +191,12 @@ impl Client {
             }
 
             let available = MAX_IN_FLIGHT.saturating_sub(in_flight.len()).clamp(1, 25);
+            let profiling = profile::enabled();
+            let poll_started = profiling.then(Instant::now);
             let response = match self
-                .inner
                 .http
                 .get(format!(
-                    "{}?limit={available}&timeout_ms={POLL_TIMEOUT_MS}",
-                    self.url("/poll")
+                    "{poll_url}?limit={available}&timeout_ms={POLL_TIMEOUT_MS}"
                 ))
                 .timeout(Duration::from_millis(POLL_TIMEOUT_MS + 5_000))
                 .send()
@@ -183,6 +214,8 @@ impl Client {
             // reqwest resolves send() once response headers are available. The
             // protocol timeout is anchored here, before body decoding.
             let received_at = Instant::now();
+            let received_wall_ms = profile::wall_ms();
+            let poll_http_us = poll_started.map(|started| started.elapsed().as_micros());
             let status = response.status();
 
             if status == StatusCode::NO_CONTENT {
@@ -207,17 +240,32 @@ impl Client {
             }
 
             failures = 0;
+            let body_started = profiling.then(Instant::now);
             let body = read_limited(response, MAX_POLL_BODY_BYTES).await?;
             let envelope =
                 parse_poll(&body).map_err(|error| format!("invalid tunnel poll JSON: {error}"))?;
+            profile::event(|| {
+                serde_json::json!({
+                    "event": "poll",
+                    "received_wall_ms": received_wall_ms,
+                    "http_us": poll_http_us,
+                    "body_us": body_started.map(|started| started.elapsed().as_micros()),
+                    "commands": envelope.commands.len(),
+                    "in_flight_before_spawn": in_flight.len(),
+                    "available": available,
+                    "self_peak_rss_bytes": profile::self_peak_rss_bytes(),
+                    "children_peak_rss_bytes": profile::children_peak_rss_bytes()
+                })
+            });
 
             // poll.limit is a hint, not a protocol execution cap. Every command
             // returned in this bounded poll body is admitted immediately.
             for raw in envelope.commands {
-                let client = self.clone();
+                let client = Arc::clone(self);
                 let runtime = runtime.clone();
-                in_flight
-                    .spawn(async move { process_command(client, runtime, raw, received_at).await });
+                in_flight.spawn(async move {
+                    process_command(client, runtime, raw, received_at, received_wall_ms).await
+                });
             }
         }
     }
@@ -227,7 +275,11 @@ impl Client {
         command: &WireCommand,
         body: Bytes,
         deadline: Option<Instant>,
+        profile_seq: u64,
     ) -> Result<(), String> {
+        let response_url = self.url("/response");
+        let shard_token = HeaderValue::from_str(&command.shard_token)
+            .map_err(|_| "tunnel shard token cannot be represented as an HTTP header")?;
         let mut attempt = 0_u32;
         loop {
             if expired(deadline) {
@@ -235,11 +287,11 @@ impl Client {
             }
 
             attempt = attempt.saturating_add(1);
+            let attempt_started = profile::enabled().then(Instant::now);
             let request = self
-                .inner
                 .http
-                .post(self.url("/response"))
-                .header("X-Tunnel-Shard-Token", &command.shard_token)
+                .post(&response_url)
+                .header("X-Tunnel-Shard-Token", shard_token.clone())
                 .header(CONTENT_TYPE, "application/json")
                 .body(body.clone());
 
@@ -253,30 +305,67 @@ impl Client {
             };
 
             match response {
-                Ok(response) => match classify_post(response.status()) {
-                    PostClass::Accepted | PostClass::Terminal => return Ok(()),
-                    PostClass::Auth => {
-                        return Err(format!(
-                            "terminal response authorization failed with HTTP {}",
-                            response.status()
-                        ));
-                    }
-                    PostClass::Fail => {
-                        return Err(format!(
-                            "terminal response was rejected with HTTP {}",
-                            response.status()
-                        ));
-                    }
-                    PostClass::Retry => {
-                        let delay = retry_after(response.headers())
-                            .unwrap_or_default()
-                            .max(backoff(attempt));
-                        if !sleep_with_deadline(delay, deadline).await {
-                            return Ok(());
+                Ok(response) => {
+                    let status = response.status();
+                    profile::event(|| {
+                        let processing_ms = response
+                            .headers()
+                            .get("openai-processing-ms")
+                            .and_then(|value| value.to_str().ok());
+                        let server_timing = response
+                            .headers()
+                            .get("server-timing")
+                            .and_then(|value| value.to_str().ok());
+                        serde_json::json!({
+                            "event": "post_attempt",
+                            "seq": profile_seq,
+                            "attempt": attempt,
+                            "elapsed_us": attempt_started
+                                .as_ref()
+                                .map(|started| started.elapsed().as_micros()),
+                            "status": status.as_u16(),
+                            "http_version": format!("{:?}", response.version()),
+                            "openai_processing_ms": processing_ms,
+                            "server_timing": server_timing,
+                            "self_peak_rss_bytes": profile::self_peak_rss_bytes()
+                        })
+                    });
+
+                    match classify_post(status) {
+                        PostClass::Accepted | PostClass::Terminal => return Ok(()),
+                        PostClass::Auth => {
+                            return Err(format!(
+                                "terminal response authorization failed with HTTP {status}"
+                            ));
+                        }
+                        PostClass::Fail => {
+                            return Err(format!(
+                                "terminal response was rejected with HTTP {status}"
+                            ));
+                        }
+                        PostClass::Retry => {
+                            let delay = retry_after(response.headers())
+                                .unwrap_or_default()
+                                .max(backoff(attempt));
+                            if !sleep_with_deadline(delay, deadline).await {
+                                return Ok(());
+                            }
                         }
                     }
-                },
+                }
                 Err(error) => {
+                    profile::event(|| {
+                        serde_json::json!({
+                            "event": "post_attempt",
+                            "seq": profile_seq,
+                            "attempt": attempt,
+                            "elapsed_us": attempt_started
+                                .as_ref()
+                                .map(|started| started.elapsed().as_micros()),
+                            "transport_error": true,
+                            "self_peak_rss_bytes": profile::self_peak_rss_bytes()
+                        })
+                    });
                     eprintln!("Terminal response transport error: {error}");
                     if !sleep_with_deadline(backoff(attempt), deadline).await {
                         return Ok(());
@@ -288,10 +377,11 @@ impl Client {
 }
 
 async fn process_command(
-    client: Client,
-    runtime: Runtime,
+    client: Arc<Client>,
+    runtime: Arc<Rivet>,
     raw: Box<RawValue>,
     received_at: Instant,
+    received_wall_ms: u128,
 ) -> Result<(), String> {
     let command = match parse_command(raw.as_ref()) {
         Ok(command) => command,
@@ -306,6 +396,17 @@ async fn process_command(
         return Ok(());
     }
 
+    let profiling = profile::enabled();
+    let seq = if profiling {
+        PROFILE_SEQ.fetch_add(1, Ordering::Relaxed)
+    } else {
+        0
+    };
+    let rss_before_bytes = profile::self_current_rss_bytes();
+    let (created_at, rpc_method, tool_name) = profile_rpc_label(raw.as_ref(), &command);
+    let start_delay_us = profiling.then(|| received_at.elapsed().as_micros());
+    let dispatch_started = profiling.then(Instant::now);
+
     let deadline = command
         .response_timeout
         .as_ref()
@@ -315,38 +416,88 @@ async fn process_command(
         return Ok(());
     }
 
-    let terminal = match command.command_type.as_str() {
-        "session_termination" => {
+    let terminal = match command.command_type {
+        CommandType::SessionTermination => {
             encode_response(&command, None, 204, "session_termination_response")?
         }
-        "jsonrpc" if command.channel != "main" => {
+        CommandType::Jsonrpc if command.channel.as_deref().unwrap_or("main") != "main" => {
             synthetic_error(&command, "client_internal", 502)?
         }
-        "jsonrpc" => match command.jsonrpc.as_deref() {
-            Some(jsonrpc) => dispatch_jsonrpc(&runtime, &command, jsonrpc, deadline).await?,
+        CommandType::Jsonrpc => match command.jsonrpc.as_deref() {
+            Some(jsonrpc) => dispatch_jsonrpc(&runtime, &command, jsonrpc, deadline, seq).await?,
             None => synthetic_error(&command, "protocol", 502)?,
         },
-        _ => synthetic_error(&command, "protocol", 502)?,
+        CommandType::Other => synthetic_error(&command, "protocol", 502)?,
     };
 
+    let dispatch_us = dispatch_started.map(|started| started.elapsed().as_micros());
+    let request_bytes = command
+        .jsonrpc
+        .as_deref()
+        .map(|value| value.get().len())
+        .unwrap_or(0);
+    let response_bytes = terminal.len();
     if terminal.is_empty() || expired(deadline) {
+        profile::event(|| {
+            serde_json::json!({
+                "event": "command",
+                "seq": seq,
+                "rpc_method": rpc_method,
+                "tool": tool_name,
+                "created_at": created_at,
+                "received_wall_ms": received_wall_ms,
+                "start_delay_us": start_delay_us,
+                "dispatch_us": dispatch_us,
+                "request_bytes": request_bytes,
+                "response_bytes": response_bytes,
+                "post_us": null,
+                "total_us": received_at.elapsed().as_micros(),
+                "result": "dropped",
+                "self_rss_before_bytes": rss_before_bytes,
+                "self_rss_after_bytes": profile::self_current_rss_bytes(),
+                "self_peak_rss_bytes": profile::self_peak_rss_bytes(),
+                "children_peak_rss_bytes": profile::children_peak_rss_bytes()
+            })
+        });
         return Ok(());
     }
-    client
-        .post_terminal(&command, Bytes::from(terminal), deadline)
-        .await
+
+    let post_started = profiling.then(Instant::now);
+    let result = client
+        .post_terminal(&command, Bytes::from(terminal), deadline, seq)
+        .await;
+    profile::event(|| {
+        serde_json::json!({
+            "event": "command",
+            "seq": seq,
+            "rpc_method": rpc_method,
+            "tool": tool_name,
+            "created_at": created_at,
+            "received_wall_ms": received_wall_ms,
+            "start_delay_us": start_delay_us,
+            "dispatch_us": dispatch_us,
+            "request_bytes": request_bytes,
+            "response_bytes": response_bytes,
+            "post_us": post_started.map(|started| started.elapsed().as_micros()),
+            "total_us": received_at.elapsed().as_micros(),
+            "result": if result.is_ok() { "ok" } else { "error" },
+            "self_rss_before_bytes": rss_before_bytes,
+            "self_rss_after_bytes": profile::self_current_rss_bytes(),
+            "self_peak_rss_bytes": profile::self_peak_rss_bytes(),
+            "children_peak_rss_bytes": profile::children_peak_rss_bytes()
+        })
+    });
+    result
 }
 
 async fn dispatch_jsonrpc(
-    runtime: &Runtime,
+    runtime: &Rivet,
     command: &WireCommand,
     jsonrpc: &RawValue,
     deadline: Option<Instant>,
+    profile_seq: u64,
 ) -> Result<Vec<u8>, String> {
-    // The tunnel headers remain preserved in WireCommand. The Rivet backend is
-    // in-process and stateless, so no downstream HTTP header hop is created.
-    let _ = &command.headers;
-    let future = runtime.dispatch_jsonrpc(jsonrpc.get().as_bytes());
+    let future = runtime.dispatch_jsonrpc_profiled(jsonrpc.get().as_bytes(), Some(profile_seq));
     let result = if let Some(deadline) = deadline {
         match timeout_at(deadline, future).await {
             Ok(result) => result,
@@ -357,9 +508,7 @@ async fn dispatch_jsonrpc(
     };
 
     match result {
-        Ok(Dispatch::Response(bytes)) => {
-            let text = String::from_utf8(bytes).map_err(|_| "MCP response is not UTF-8")?;
-            let raw = RawValue::from_string(text).map_err(|error| error.to_string())?;
+        Ok(Dispatch::Response(raw)) => {
             encode_response(command, Some(raw.as_ref()), 200, "jsonrpc_response")
         }
         Ok(Dispatch::NotificationAck) => encode_response(command, None, 204, "notify_ack"),
@@ -392,7 +541,7 @@ fn synthetic_error(
             }
         }
     });
-    let raw = RawValue::from_string(value.to_string()).map_err(|error| error.to_string())?;
+    let raw = serde_json::value::to_raw_value(&value).map_err(|error| error.to_string())?;
     encode_response(command, Some(raw.as_ref()), status, "jsonrpc_response")
 }
 
@@ -404,7 +553,7 @@ fn encode_response(
 ) -> Result<Vec<u8>, String> {
     serde_json::to_vec(&TunnelResponse {
         request_id: &command.request_id,
-        channel: &command.channel,
+        channel: command.channel.as_deref().unwrap_or("main"),
         resp_json: jsonrpc,
         resp_headers: jsonrpc.map(|_| ResponseHeaders {
             content_type: ["application/json"],
@@ -504,17 +653,7 @@ fn instance_id() -> String {
     format!("rivet-{}-{nanos}", std::process::id())
 }
 
-fn prompt_line(prompt: &str) -> Result<String, String> {
-    print!("  {prompt}");
-    io::stdout().flush().map_err(|error| error.to_string())?;
-    let mut value = String::new();
-    io::stdin()
-        .read_line(&mut value)
-        .map_err(|error| error.to_string())?;
-    Ok(value.trim().to_owned())
-}
-
-fn secret(prompt: &str) -> Result<String, String> {
+fn read_hidden(prompt: &str) -> Result<String, String> {
     print!("  {prompt}");
     io::stdout().flush().map_err(|error| error.to_string())?;
     {
@@ -581,7 +720,7 @@ fn credentials() -> Result<(String, String, String), String> {
     let interactive = io::stdin().is_terminal();
     let tunnel_id = match env::var("CONTROL_PLANE_TUNNEL_ID") {
         Ok(value) if !value.is_empty() => value,
-        _ if interactive => prompt_line("Tunnel ID: ")?,
+        _ if interactive => read_hidden("Tunnel ID (input hidden): ")?,
         _ => return Err("CONTROL_PLANE_TUNNEL_ID is required without a terminal".into()),
     };
     if !valid_tunnel_id(&tunnel_id) {
@@ -589,7 +728,7 @@ fn credentials() -> Result<(String, String, String), String> {
     }
     let api_key = match env::var("CONTROL_PLANE_API_KEY") {
         Ok(value) if !value.is_empty() => value,
-        _ if interactive => secret("Runtime API key (input hidden): ")?,
+        _ if interactive => read_hidden("Runtime API key (input hidden): ")?,
         _ => return Err("CONTROL_PLANE_API_KEY is required without a terminal".into()),
     };
     if api_key.is_empty() {
@@ -606,7 +745,7 @@ fn credentials() -> Result<(String, String, String), String> {
 pub async fn run(config: Arc<Config>) -> Result<(), String> {
     let (base_url, tunnel_id, api_key) = credentials()?;
     let client = Client::new(base_url, tunnel_id, api_key)?;
-    let runtime = Runtime::new(config);
+    let runtime = Arc::new(Rivet::new(config));
 
     println!("  Connecting to OpenAI Secure MCP Tunnel...");
     client.validate().await?;
@@ -947,7 +1086,7 @@ mod tests {
         fs::write(&target, "before").unwrap();
 
         let config = Config::native_session(vec![root.clone()], BTreeMap::new(), false).unwrap();
-        let runtime = Runtime::new(Arc::new(config));
+        let runtime = Arc::new(Rivet::new(Arc::new(config)));
         let mut server = MockServer::start(poll_body(&target));
         let client = Client::new(
             server.base_url.clone(),

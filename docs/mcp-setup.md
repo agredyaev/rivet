@@ -75,15 +75,52 @@ Rivet then asks for:
 - the OpenAI tunnel ID;
 - the tunnel runtime API key.
 
-Create these in OpenAI Platform before starting the session. The runtime API key is not written to Rivet configuration and is not passed on the command line.
+Both prompts disable terminal echo. Rivet does not save either value.
 
-For non-interactive operation, provide:
+Create the tunnel and credentials before starting Rivet:
+
+- [OpenAI Secure MCP Tunnel guide](https://developers.openai.com/api/docs/guides/secure-mcp-tunnels)
+- [Platform tunnel settings](https://platform.openai.com/settings/organization/tunnels) — create or select the tunnel and copy its `tunnel_id`
+- [Platform API keys](https://platform.openai.com/api-keys) — create the runtime API key for a role with **Tunnels Read + Use** permission
+
+For a non-interactive shell, export the variables before starting Rivet:
 
 ```sh
-CONTROL_PLANE_TUNNEL_ID=tunnel_... \
-CONTROL_PLANE_API_KEY=... \
-rivet session ...
+export CONTROL_PLANE_TUNNEL_ID="tunnel_0123456789abcdef0123456789abcdef"
+export CONTROL_PLANE_API_KEY="sk-..."
+
+rivet session \
+  --allow-command git=git \
+  --allow-subcommand git=status \
+  --allow-subcommand git=diff \
+  --allow-command cargo=cargo \
+  --allow-subcommand cargo=check \
+  --allow-subcommand cargo=test
 ```
+
+To keep the real values out of shell history, read them without terminal echo and then export them:
+
+```sh
+read -rsp "Tunnel ID: " CONTROL_PLANE_TUNNEL_ID; echo
+export CONTROL_PLANE_TUNNEL_ID
+read -rsp "Runtime API key: " CONTROL_PLANE_API_KEY; echo
+export CONTROL_PLANE_API_KEY
+
+rivet session --allow-command git=git --allow-subcommand git=status
+```
+
+Environment assignments can also be scoped to one Rivet invocation:
+
+```sh
+CONTROL_PLANE_TUNNEL_ID="tunnel_0123456789abcdef0123456789abcdef" \
+CONTROL_PLANE_API_KEY="sk-..." \
+rivet session \
+  --allow-command git=git \
+  --allow-subcommand git=status \
+  --allow-subcommand git=diff
+```
+
+Do not paste a real runtime API key into a command that your shell records in history.
 
 Production uses `https://api.openai.com`. A different `CONTROL_PLANE_BASE_URL` is accepted only when `RIVET_ALLOW_UNSAFE_CONTROL_PLANE=1` is set explicitly for testing.
 
@@ -110,18 +147,16 @@ Press Ctrl+C to stop the daemon. Rivet then shuts down managed child processes t
 `run_command` never waits for an external executable to finish. It returns:
 
 ```json
-{"state":"submitted","process_id":123}
+{"process_id":123}
 ```
 
-The child continues independently of the originating tunnel request. Read state and bounded output with:
+The child continues independently of the originating tunnel request. `list_processes` is the single process-state snapshot and returns separate `running` and `completed` arrays. Use `read_process_output` only to read bounded captured stdout/stderr by offset.
 
-- `read_process_output`;
-- `list_processes`;
-- `list_ready_processes`.
+There is no ready queue, completion cursor, long-poll parameter, or per-process status wait API.
 
 `start_process` uses the same managed process registry but keeps stdin available for interactive work.
 
-This separation prevents compilation, tests, benchmarks, and similar long-running work from holding a tunnel request open for the entire child-process lifetime.
+This separation prevents compilation, tests, and benchmarks from holding a tunnel request open for the entire child-process lifetime.
 
 ## ChatGPT app
 
@@ -138,7 +173,8 @@ The direct transport:
 - disables control-plane redirects;
 - sends the runtime key only in the Bearer authorization header;
 - treats `request_id`, `channel`, and `shard_token` as opaque correlation data;
-- never broadens the current-directory workspace or command permissions;
+- keeps MCP file-tool access fixed to the current-directory workspace;
+- grants linked-worktree Git metadata access only to the sandboxed `git` executable;
 - runs native-session child commands under Seatbelt on macOS or bubblewrap on Linux/WSL2;
 - denies child network access by default; `--network` enables child networking without weakening the filesystem sandbox;
 - fails closed when the required sandbox backend is unavailable;
@@ -152,4 +188,4 @@ The direct transport:
 - **`SANDBOX_ERROR`:** macOS requires the built-in Seatbelt backend; Linux/WSL2 requires `bubblewrap`. On Ubuntu 24.04, install `apparmor-profiles`, copy `bwrap-userns-restrict` from `/usr/share/apparmor/extra-profiles/` to `/etc/apparmor.d/`, and load it with `apparmor_parser -r`.
 - **`COMMAND_NOT_FOUND`:** restart the session with that command explicitly allowed.
 - **`PATH_DENIED`:** use an absolute path under one of the roots returned by `list_roots`.
-- **Long command stops early:** set an appropriate `timeout_ms`; `run_command` otherwise uses `default_timeout_ms`.
+- **Long command stops early:** set `timeout_ms` high enough for that command; without it, `run_command` uses `default_timeout_ms`.

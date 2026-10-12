@@ -4,7 +4,7 @@
 
 use serde::Deserialize;
 use serde_json::{Value, value::RawValue};
-use std::{collections::BTreeMap, time::Duration};
+use std::time::Duration;
 
 #[derive(Deserialize)]
 pub struct PollEnvelope {
@@ -12,23 +12,26 @@ pub struct PollEnvelope {
     pub commands: Vec<Box<RawValue>>,
 }
 
+#[derive(Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CommandType {
+    Jsonrpc,
+    SessionTermination,
+    #[serde(other)]
+    Other,
+}
+
 #[derive(Deserialize)]
 pub struct WireCommand {
     pub request_id: String,
     pub shard_token: String,
-    pub command_type: String,
-    #[serde(default = "main_channel")]
-    pub channel: String,
+    pub command_type: CommandType,
     #[serde(default)]
-    pub headers: BTreeMap<String, Vec<String>>,
+    pub channel: Option<String>,
     #[serde(default)]
     pub response_timeout: Option<Value>,
     #[serde(default)]
     pub jsonrpc: Option<Box<RawValue>>,
-}
-
-fn main_channel() -> String {
-    "main".into()
 }
 
 pub fn parse_poll(input: &[u8]) -> Result<PollEnvelope, serde_json::Error> {
@@ -147,7 +150,7 @@ mod tests {
     }
 
     #[test]
-    fn poll_preserves_raw_payload_and_multivalue_headers() {
+    fn poll_accepts_future_fields_and_preserves_raw_jsonrpc() {
         let body = br#"{"commands":[{
           "request_id":"req_1","shard_token":"opaque","command_type":"jsonrpc","channel":"main",
           "headers":{"Mcp-Protocol-Version":["2026-07-28","future"]},
@@ -157,7 +160,6 @@ mod tests {
         }]}"#;
         let envelope = parse_poll(body).unwrap();
         let command = parse_command(envelope.commands[0].as_ref()).unwrap();
-        assert_eq!(command.headers["Mcp-Protocol-Version"].len(), 2);
         assert!(command.jsonrpc.unwrap().get().contains("tools/list"));
     }
 }

@@ -28,15 +28,15 @@ The installer downloads the latest release and starts `rivet session`.
 
 During session setup, Rivet:
 1. asks which commands to allow;
-2. asks for the OpenAI tunnel ID and runtime API key;
+2. asks for the OpenAI tunnel ID and runtime API key with terminal echo disabled;
 3. starts the native outbound HTTPS tunnel for the current directory and selected command scope.
 
-The runtime API key is entered with hidden input and is not saved. The native tunnel keeps session scope only in memory.
+Create the tunnel in [OpenAI Platform tunnel settings](https://platform.openai.com/settings/organization/tunnels) and create the runtime API key in [OpenAI Platform API keys](https://platform.openai.com/api-keys). Rivet does not save either value. The native tunnel keeps session scope only in memory.
 
 Built-in command presets:
 - `uv`, `mkdir`, `rg`, `make`: any arguments;
 - `git`: `status`, `diff`, `log`, `show`, `add`, `commit`, `rev-parse`, `ls-files`;
-- `cargo`: `check`, `test`, `fmt`, `clippy`, `metadata`.
+- `cargo`: `check`, `test`, `fmt`, `clippy`, `metadata`, `build`.
 
 Custom commands can be added during setup with either unrestricted arguments or an allowed set of first arguments.
 
@@ -82,7 +82,7 @@ See [MCP setup](docs/mcp-setup.md) for Secure MCP Tunnel configuration.
 - [MCP setup](docs/mcp-setup.md)
 - [Security model](docs/security.md)
 - [Development and CI](docs/development.md)
-- [Release measurements](docs/measurements.md)
+- [Performance measurement procedure](docs/measurements.md)
 
 ## Build from source
 

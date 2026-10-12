@@ -1,16 +1,18 @@
-//! Lifecycle and bounded output capture for managed child processes.
+//! Fixed-slot managed child-process runtime.
 //!
-//! A bounded registry owns active and retained processes. Supervisors move
-//! completed process IDs into a completion queue when the OS reports exit.
+//! The registry is intentionally data-oriented: a fixed 32-slot retention ring stores
+//! process metadata in SoA arrays while at most 10 children may run concurrently. Process state is derived from id + result.
+//! Captured output buffers are allocated once at startup and reused by slot.
+
 use crate::{
-    commands::{CommandRequest, admitted, terminate},
-    config::Config,
+    commands::{CommandRequest, admitted, terminate, terminate_group},
+    config::{CommandId, Config, PROCESS_RETENTION_SLOTS},
     mcp::Fault,
+    profile,
 };
 use serde::Serialize;
 use serde_json::json;
 use std::{
-    collections::{HashMap, VecDeque},
     io,
     process::Stdio,
     sync::{Arc, Mutex},
@@ -19,9 +21,19 @@ use std::{
 use tokio::{
     io::{AsyncRead, AsyncReadExt, AsyncWriteExt},
     process::ChildStdin,
-    sync::{Mutex as AsyncMutex, oneshot, watch},
+    sync::{Mutex as AsyncMutex, watch},
+    task::JoinSet,
     time::{Duration, Instant as TokioInstant},
 };
+
+const PROCESS_SLOTS: usize = PROCESS_RETENTION_SLOTS;
+const STREAMS_PER_PROCESS: usize = 2;
+const OUTPUT_STREAMS: usize = PROCESS_SLOTS * STREAMS_PER_PROCESS;
+const RESULT_RUNNING: i32 = -1;
+const RESULT_STOPPING: i32 = -2;
+const RESULT_STOPPED: i32 = -3;
+const RESULT_TIMED_OUT: i32 = -4;
+const RESULT_NO_CODE: i32 = -5;
 
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Serialize)]
@@ -39,32 +51,35 @@ pub struct Status {
 struct Buffer {
     bytes: Vec<u8>,
     total: u64,
-    truncated: bool,
 }
 
 impl Buffer {
-    fn new() -> Self {
+    fn with_capacity(cap: usize) -> Self {
         Self {
-            bytes: Vec::new(),
+            bytes: Vec::with_capacity(cap),
             total: 0,
-            truncated: false,
         }
     }
 
-    fn append(&mut self, chunk: &[u8], cap: usize) {
-        self.total += chunk.len() as u64;
-        let count = chunk.len().min(cap.saturating_sub(self.bytes.len()));
-        self.bytes.extend_from_slice(&chunk[..count]);
-        self.truncated |= count < chunk.len();
+    fn reset(&mut self) {
+        self.bytes.clear();
+        self.total = 0;
     }
 
-    fn slice(&self, offset: u64, limit: usize) -> Result<OutputSlice, Fault> {
+    fn append(&mut self, chunk: &[u8], cap: usize) {
+        self.total = self.total.saturating_add(chunk.len() as u64);
+        let count = chunk.len().min(cap.saturating_sub(self.bytes.len()));
+        self.bytes.extend_from_slice(&chunk[..count]);
+    }
+
+    fn slice(&self, offset: u64, limit: usize, cap: usize) -> Result<OutputSlice, Fault> {
         if offset > self.total {
             return Err(Fault::new(
                 "INVALID_REQUEST",
                 "output offset is beyond received bytes",
             ));
         }
+
         let start = (offset as usize).min(self.bytes.len());
         let end = start.saturating_add(limit).min(self.bytes.len());
         let next_offset =
@@ -73,11 +88,12 @@ impl Buffer {
             } else {
                 end as u64
             };
+
         Ok(OutputSlice {
             text: String::from_utf8_lossy(&self.bytes[start..end]).into_owned(),
             next_offset,
             total_bytes: self.total,
-            truncated: self.truncated,
+            truncated: self.total > cap as u64,
         })
     }
 }
@@ -90,29 +106,156 @@ struct OutputSlice {
     truncated: bool,
 }
 
-struct ProcessEntry {
-    command: String,
-    stdout: Arc<Mutex<Buffer>>,
-    stderr: Arc<Mutex<Buffer>>,
-    stdin: AsyncMutex<Option<ChildStdin>>,
-    stop: Mutex<Option<oneshot::Sender<()>>>,
-    status: watch::Receiver<Status>,
-    activity: watch::Receiver<u64>,
-    started: Instant,
+struct OutputStore {
+    streams: [Mutex<Buffer>; OUTPUT_STREAMS],
+    stdout_cap: usize,
+    stderr_cap: usize,
 }
 
-struct EntryRecord {
-    process: Arc<ProcessEntry>,
-    active: bool,
-    completion_sequence: Option<u64>,
+impl OutputStore {
+    fn new(stdout_cap: usize, stderr_cap: usize) -> Self {
+        Self {
+            streams: std::array::from_fn(|index| {
+                let cap = if index % STREAMS_PER_PROCESS == 0 {
+                    stdout_cap
+                } else {
+                    stderr_cap
+                };
+                Mutex::new(Buffer::with_capacity(cap))
+            }),
+            stdout_cap,
+            stderr_cap,
+        }
+    }
+
+    #[inline]
+    fn index(slot: usize, stderr: bool) -> usize {
+        slot * STREAMS_PER_PROCESS + usize::from(stderr)
+    }
+
+    fn reset(&self, slot: usize) {
+        self.streams[Self::index(slot, false)]
+            .lock()
+            .unwrap()
+            .reset();
+        self.streams[Self::index(slot, true)]
+            .lock()
+            .unwrap()
+            .reset();
+    }
+
+    fn append(&self, slot: usize, stderr: bool, chunk: &[u8]) {
+        let cap = if stderr {
+            self.stderr_cap
+        } else {
+            self.stdout_cap
+        };
+        self.streams[Self::index(slot, stderr)]
+            .lock()
+            .unwrap()
+            .append(chunk, cap);
+    }
+
+    fn slice(
+        &self,
+        slot: usize,
+        stderr: bool,
+        offset: u64,
+        limit: usize,
+    ) -> Result<OutputSlice, Fault> {
+        let cap = if stderr {
+            self.stderr_cap
+        } else {
+            self.stdout_cap
+        };
+        self.streams[Self::index(slot, stderr)]
+            .lock()
+            .unwrap()
+            .slice(offset, limit, cap)
+    }
+
+    fn totals(&self, slot: usize) -> (u64, u64, bool) {
+        let stdout = self.streams[Self::index(slot, false)].lock().unwrap();
+        let stderr = self.streams[Self::index(slot, true)].lock().unwrap();
+        (
+            stdout.total,
+            stderr.total,
+            stdout.total > self.stdout_cap as u64 || stderr.total > self.stderr_cap as u64,
+        )
+    }
+
+    fn profile_totals(&self, slot: usize) -> (u64, u64, usize, usize, bool, bool) {
+        let stdout = self.streams[Self::index(slot, false)].lock().unwrap();
+        let stderr = self.streams[Self::index(slot, true)].lock().unwrap();
+        (
+            stdout.total,
+            stderr.total,
+            stdout.bytes.len(),
+            stderr.bytes.len(),
+            stdout.total > self.stdout_cap as u64,
+            stderr.total > self.stderr_cap as u64,
+        )
+    }
 }
 
-struct TableState {
-    entries: HashMap<ProcessId, EntryRecord>,
-    ready: VecDeque<ProcessId>,
-    next_process: u64,
-    next_completion: u64,
-    running: usize,
+struct Core {
+    // id == 0 => free.
+    // RESULT_RUNNING / RESULT_STOPPING => running.
+    // Any other result => completed.
+    id: [u64; PROCESS_SLOTS],
+    command: [CommandId; PROCESS_SLOTS],
+    pgid: [u32; PROCESS_SLOTS],
+
+    // Running => monotonic start ns relative to ProcessTable::epoch.
+    // Completed => final elapsed ns.
+    time_ns: [u64; PROCESS_SLOTS],
+
+    result: [i32; PROCESS_SLOTS],
+
+    next_id: u64,
+}
+
+impl Core {
+    fn new() -> Self {
+        Self {
+            id: [0; PROCESS_SLOTS],
+            command: [CommandId::ZERO; PROCESS_SLOTS],
+            pgid: [0; PROCESS_SLOTS],
+            time_ns: [0; PROCESS_SLOTS],
+            result: [RESULT_RUNNING; PROCESS_SLOTS],
+            next_id: 1,
+        }
+    }
+
+    #[inline]
+    fn is_running(&self, slot: usize) -> bool {
+        self.id[slot] != 0 && matches!(self.result[slot], RESULT_RUNNING | RESULT_STOPPING)
+    }
+
+    #[inline]
+    fn is_completed(&self, slot: usize) -> bool {
+        self.id[slot] != 0 && !matches!(self.result[slot], RESULT_RUNNING | RESULT_STOPPING)
+    }
+
+    fn slot(&self, id: u64) -> Option<usize> {
+        self.id.iter().position(|candidate| *candidate == id)
+    }
+
+    fn running_count(&self) -> usize {
+        (0..PROCESS_SLOTS)
+            .filter(|slot| self.is_running(*slot))
+            .count()
+    }
+
+    fn oldest_completed_slot(&self) -> Option<usize> {
+        (0..PROCESS_SLOTS)
+            .filter(|slot| self.is_completed(*slot))
+            .min_by_key(|slot| self.id[*slot])
+    }
+
+    fn clear_slot(&mut self, slot: usize) {
+        self.id[slot] = 0;
+    }
 }
 
 enum InputMode {
@@ -121,133 +264,177 @@ enum InputMode {
 }
 
 pub struct ProcessTable {
-    state: Arc<Mutex<TableState>>,
+    core: Mutex<Core>,
+    output: OutputStore,
+    stdin: [AsyncMutex<Option<ChildStdin>>; PROCESS_SLOTS],
+    epoch: Instant,
+    state_event: watch::Sender<()>,
 }
 
 impl ProcessTable {
-    pub fn new() -> Self {
+    pub fn new(config: &Config) -> Self {
+        let (state_event, _) = watch::channel(());
         Self {
-            state: Arc::new(Mutex::new(TableState {
-                entries: HashMap::new(),
-                ready: VecDeque::new(),
-                next_process: 1,
-                next_completion: 1,
-                running: 0,
-            })),
+            core: Mutex::new(Core::new()),
+            output: OutputStore::new(
+                config.limits.max_stdout_bytes,
+                config.limits.max_stderr_bytes,
+            ),
+            stdin: std::array::from_fn(|_| AsyncMutex::new(None)),
+            epoch: Instant::now(),
+            state_event,
         }
     }
 
-    fn get(&self, id: u64) -> Result<Arc<ProcessEntry>, Fault> {
-        self.state
-            .lock()
-            .unwrap()
-            .entries
-            .get(&ProcessId(id))
-            .map(|record| record.process.clone())
-            .ok_or_else(|| Fault::new("PROCESS_NOT_FOUND", "process ID is unknown or was evicted"))
-    }
-
-    fn remove_ready_locked(state: &mut TableState, id: ProcessId) {
-        state.ready.retain(|queued| *queued != id);
-    }
-
-    fn release_active_locked(state: &mut TableState, id: ProcessId) {
-        let active = state.entries.get(&id).is_some_and(|record| record.active);
-        if !active {
-            return;
-        }
-        state.running = state.running.saturating_sub(1);
-        if let Some(record) = state.entries.get_mut(&id) {
-            record.active = false;
+    #[cfg(test)]
+    fn test_new() -> Self {
+        let (state_event, _) = watch::channel(());
+        Self {
+            core: Mutex::new(Core::new()),
+            output: OutputStore::new(4096, 4096),
+            stdin: std::array::from_fn(|_| AsyncMutex::new(None)),
+            epoch: Instant::now(),
+            state_event,
         }
     }
 
-    fn remove_entry_locked(state: &mut TableState, id: ProcessId) {
-        Self::release_active_locked(state, id);
-        Self::remove_ready_locked(state, id);
-        state.entries.remove(&id);
+    #[inline]
+    fn now_ns(&self) -> u64 {
+        self.epoch.elapsed().as_nanos().min(u64::MAX as u128) as u64
     }
 
-    fn insert_entry(
+    fn status_locked(core: &Core, slot: usize) -> Status {
+        let completed = core.is_completed(slot);
+        Status {
+            running: core.is_running(slot),
+            exit_code: (completed && core.result[slot] >= 0).then_some(core.result[slot]),
+            timed_out: core.result[slot] == RESULT_TIMED_OUT,
+            stopped: core.result[slot] == RESULT_STOPPED,
+            duration_ms: completed.then_some(core.time_ns[slot] / 1_000_000),
+        }
+    }
+
+    fn reserve_slot(
         &self,
-        config: &Config,
-        command: String,
-        stop_tx: oneshot::Sender<()>,
-        status_rx: watch::Receiver<Status>,
-        activity_rx: watch::Receiver<u64>,
-    ) -> Result<(ProcessId, Arc<ProcessEntry>), Fault> {
-        let entry = Arc::new(ProcessEntry {
-            command,
-            stdout: Arc::new(Mutex::new(Buffer::new())),
-            stderr: Arc::new(Mutex::new(Buffer::new())),
-            stdin: AsyncMutex::new(None),
-            stop: Mutex::new(Some(stop_tx)),
-            status: status_rx,
-            activity: activity_rx,
-            started: Instant::now(),
-        });
-
-        let mut state = self.state.lock().unwrap();
-        if state.running >= config.limits.max_running_processes {
+        max_running: usize,
+        command: CommandId,
+    ) -> Result<(ProcessId, usize), Fault> {
+        let mut core = self.core.lock().unwrap();
+        if core.running_count() >= max_running {
             return Err(Fault::new("PROCESS_LIMIT", "process capacity is full"));
         }
 
-        if state.entries.len() >= config.limits.max_running_processes
-            && let Some(oldest) = state.ready.front().copied()
-        {
-            Self::remove_entry_locked(&mut state, oldest);
-        }
-        if state.entries.len() >= config.limits.max_running_processes {
-            return Err(Fault::new("PROCESS_LIMIT", "process registry is full"));
-        }
+        let slot = core
+            .id
+            .iter()
+            .position(|id| *id == 0)
+            .or_else(|| core.oldest_completed_slot())
+            .ok_or_else(|| Fault::new("PROCESS_LIMIT", "process registry is full"))?;
 
-        let id = ProcessId(state.next_process);
-        state.next_process = state
-            .next_process
+        self.output.reset(slot);
+
+        let id = core.next_id;
+        core.next_id = core
+            .next_id
             .checked_add(1)
             .ok_or_else(|| Fault::new("PROCESS_LIMIT", "process IDs exhausted"))?;
-        state.running += 1;
-        state.entries.insert(
-            id,
-            EntryRecord {
-                process: entry.clone(),
-                active: true,
-                completion_sequence: None,
-            },
-        );
-        Ok((id, entry))
+
+        core.id[slot] = id;
+        core.command[slot] = command;
+        core.pgid[slot] = 0;
+        core.time_ns[slot] = self.now_ns();
+        core.result[slot] = RESULT_RUNNING;
+
+        Ok((ProcessId(id), slot))
     }
 
-    fn spawn(
-        &self,
-        config: Arc<Config>,
+    fn release_reserved(&self, id: ProcessId, slot: usize) {
+        let released = {
+            let mut core = self.core.lock().unwrap();
+            if core.id[slot] == id.0 && core.is_running(slot) {
+                core.clear_slot(slot);
+                self.output.reset(slot);
+                true
+            } else {
+                false
+            }
+        };
+        if released {
+            self.state_event.send_replace(());
+        }
+    }
+
+    fn set_pgid(&self, id: ProcessId, slot: usize, pgid: u32) {
+        let changed = {
+            let mut core = self.core.lock().unwrap();
+            if core.id[slot] == id.0 && core.is_running(slot) {
+                core.pgid[slot] = pgid;
+                true
+            } else {
+                false
+            }
+        };
+        if changed {
+            self.state_event.send_replace(());
+        }
+    }
+
+    fn result_for(&self, id: ProcessId, slot: usize) -> i32 {
+        let core = self.core.lock().unwrap();
+        if core.id[slot] == id.0 {
+            core.result[slot]
+        } else {
+            RESULT_RUNNING
+        }
+    }
+
+    fn complete(&self, id: ProcessId, slot: usize, mut result: i32) -> Option<Status> {
+        let now_ns = self.now_ns();
+        let mut core = self.core.lock().unwrap();
+        if core.id[slot] != id.0 || core.is_completed(slot) {
+            return None;
+        }
+
+        if core.result[slot] == RESULT_STOPPING && result != RESULT_TIMED_OUT {
+            result = RESULT_STOPPED;
+        }
+
+        core.time_ns[slot] = now_ns.saturating_sub(core.time_ns[slot]);
+        core.result[slot] = result;
+        Some(Self::status_locked(&core, slot))
+    }
+
+    async fn spawn(
+        self: &Arc<Self>,
+        config: &Config,
         request: CommandRequest,
         default_timeout_ms: u64,
         input_mode: InputMode,
     ) -> Result<ProcessId, Fault> {
-        let command_name = request.command.clone();
-        let (mut command, timeout_ms) = admitted(&config, &request, default_timeout_ms)?;
+        let profiling = profile::enabled();
+        let profile_command = profiling.then(|| request.command.clone());
+        let rss_before_bytes = profile::self_current_rss_bytes();
+
+        let admitted_started = profiling.then(Instant::now);
+        let (mut command, timeout_ms, command_id) = admitted(config, &request, default_timeout_ms)?;
+        let admitted_us = admitted_started
+            .as_ref()
+            .map(|started| started.elapsed().as_micros());
         if matches!(input_mode, InputMode::Closed) {
             command.stdin(Stdio::null());
         }
 
-        let (stop_tx, stop_rx) = oneshot::channel();
-        let (activity_tx, activity_rx) = watch::channel(0_u64);
-        let (status_tx, status_rx) = watch::channel(Status {
-            running: true,
-            exit_code: None,
-            timed_out: false,
-            stopped: false,
-            duration_ms: None,
-        });
-        let (id, entry) =
-            self.insert_entry(&config, command_name, stop_tx, status_rx, activity_rx)?;
+        let registry_started = profiling.then(Instant::now);
+        let (id, slot) = self.reserve_slot(config.limits.max_running_processes, command_id)?;
+        let registry_us = registry_started
+            .as_ref()
+            .map(|started| started.elapsed().as_micros());
 
+        let spawn_started = profiling.then(Instant::now);
         let mut child = match command.spawn() {
             Ok(child) => child,
             Err(error) => {
-                let mut state = self.state.lock().unwrap();
-                Self::remove_entry_locked(&mut state, id);
+                self.release_reserved(id, slot);
                 return Err(Fault::with(
                     "SPAWN_ERROR",
                     "failed to spawn process",
@@ -255,290 +442,255 @@ impl ProcessTable {
                 ));
             }
         };
+        let spawn_us = spawn_started
+            .as_ref()
+            .map(|started| started.elapsed().as_micros());
+        let spawn_finished_at = profiling.then(Instant::now);
+
         let Some(pid) = child.id() else {
             let _ = child.start_kill();
-            let mut state = self.state.lock().unwrap();
-            Self::remove_entry_locked(&mut state, id);
+            self.release_reserved(id, slot);
             return Err(Fault::new("SPAWN_ERROR", "spawned child has no process ID"));
         };
+        self.set_pgid(id, slot, pid);
+
+        profile::event(|| {
+            json!({
+                "event": "process_spawn",
+                "process_id": id.0,
+                "command": profile_command.as_deref(),
+                "admitted_us": admitted_us,
+                "registry_us": registry_us,
+                "spawn_us": spawn_us,
+                "self_rss_before_bytes": rss_before_bytes,
+                "self_rss_after_spawn_bytes": profile::self_current_rss_bytes(),
+                "self_peak_rss_bytes": profile::self_peak_rss_bytes(),
+                "children_peak_rss_bytes": profile::children_peak_rss_bytes()
+            })
+        });
 
         if matches!(input_mode, InputMode::Piped) {
-            *entry
-                .stdin
-                .try_lock()
-                .expect("new process stdin lock must be uncontended") = child.stdin.take();
+            *self.stdin[slot].lock().await = child.stdin.take();
+            self.state_event.send_replace(());
         } else {
             let _ = child.stdin.take();
         }
+
         let stdout = child.stdout.take().expect("piped stdout");
         let stderr = child.stderr.take().expect("piped stderr");
+        let table = Arc::clone(self);
 
-        let out_task = tokio::spawn(drain_into(
-            stdout,
-            entry.stdout.clone(),
-            config.limits.max_stdout_bytes,
-            activity_tx.clone(),
-        ));
-        let err_task = tokio::spawn(drain_into(
-            stderr,
-            entry.stderr.clone(),
-            config.limits.max_stderr_bytes,
-            activity_tx.clone(),
-        ));
-
-        let supervisor_entry = entry.clone();
-        let state = self.state.clone();
         tokio::spawn(async move {
+            let supervisor_started = profiling.then(Instant::now);
+            let supervisor_start_us = spawn_finished_at
+                .as_ref()
+                .map(|started| started.elapsed().as_micros());
             let deadline = TokioInstant::now() + Duration::from_millis(timeout_ms);
-            let mut stop_rx = stop_rx;
-            let (mut status, needs_stop) = tokio::select! {
-                result = child.wait() => (
-                    Status {
-                        running: false,
-                        exit_code: result.ok().and_then(|s| s.code()),
-                        timed_out: false,
-                        stopped: false,
-                        duration_ms: None,
-                    },
-                    false,
-                ),
-                _ = &mut stop_rx => (
-                    Status {
-                        running: false,
-                        exit_code: None,
-                        timed_out: false,
-                        stopped: true,
-                        duration_ms: None,
-                    },
-                    true,
-                ),
-                _ = tokio::time::sleep_until(deadline) => (
-                    Status {
-                        running: false,
-                        exit_code: None,
-                        timed_out: true,
-                        stopped: false,
-                        duration_ms: None,
-                    },
-                    true,
-                ),
-            };
 
-            if needs_stop {
-                let _ = terminate(&mut child, pid).await;
-            }
-
-            let mut outputs = Box::pin(async {
-                let _ = tokio::join!(out_task, err_task);
+            let output_table = Arc::clone(&table);
+            let output_started_at = spawn_finished_at;
+            let mut outputs = tokio::spawn(async move {
+                let (stdout_result, stderr_result) = tokio::join!(
+                    drain_into(stdout, &output_table, slot, false, output_started_at,),
+                    drain_into(stderr, &output_table, slot, true, output_started_at,)
+                );
+                (stdout_result.ok().flatten(), stderr_result.ok().flatten())
             });
-            if !needs_stop {
-                tokio::select! {
-                    _ = &mut outputs => {},
-                    _ = &mut stop_rx => {
-                        status.stopped = true;
-                        let _ = terminate(&mut child, pid).await;
-                        outputs.await;
-                    },
-                    _ = tokio::time::sleep_until(deadline) => {
-                        status.timed_out = true;
-                        let _ = terminate(&mut child, pid).await;
-                        outputs.await;
-                    },
+
+            let first_event_us;
+            let first_event_kind;
+            let mut terminate_us = 0_u128;
+            let mut final_result;
+
+            tokio::select! {
+                status = child.wait() => {
+                    first_event_us = supervisor_started
+                        .as_ref()
+                        .map(|started| started.elapsed().as_micros());
+                    if table.result_for(id, slot) == RESULT_STOPPING {
+                        first_event_kind = "stop";
+                        final_result = RESULT_STOPPED;
+                    } else {
+                        first_event_kind = "exit";
+                        final_result = status
+                            .ok()
+                            .and_then(|status| status.code())
+                            .unwrap_or(RESULT_NO_CODE);
+                    }
                 }
+                _ = tokio::time::sleep_until(deadline) => {
+                    first_event_us = supervisor_started
+                        .as_ref()
+                        .map(|started| started.elapsed().as_micros());
+                    first_event_kind = "timeout";
+                    final_result = RESULT_TIMED_OUT;
+                    let terminate_started = profiling.then(Instant::now);
+                    let _ = terminate(&mut child, pid).await;
+                    terminate_us = terminate_started
+                        .as_ref()
+                        .map(|started| started.elapsed().as_micros())
+                        .unwrap_or(0);
+                }
+            }
+
+            let output_join_started = profiling.then(Instant::now);
+            let (stdout_first_read_us, stderr_first_read_us) = if final_result == RESULT_TIMED_OUT {
+                outputs.await.unwrap_or((None, None))
             } else {
-                outputs.await;
-            }
-
-            *supervisor_entry.stdin.lock().await = None;
-            status.duration_ms = Some(supervisor_entry.started.elapsed().as_millis() as u64);
-
-            let mut state = state.lock().unwrap();
-            status_tx.send_replace(status);
-            activity_tx.send_modify(|version| *version = version.wrapping_add(1));
-            ProcessTable::release_active_locked(&mut state, id);
-            if state.entries.contains_key(&id) {
-                let sequence = state.next_completion;
-                state.next_completion = state.next_completion.saturating_add(1);
-                if let Some(record) = state.entries.get_mut(&id) {
-                    record.completion_sequence = Some(sequence);
+                tokio::select! {
+                    result = &mut outputs => result.unwrap_or((None, None)),
+                    _ = tokio::time::sleep_until(deadline) => {
+                        final_result = RESULT_TIMED_OUT;
+                        let terminate_started = profiling.then(Instant::now);
+                        let _ = terminate_group(pid).await;
+                        terminate_us = terminate_us.saturating_add(
+                            terminate_started
+                                .as_ref()
+                                .map(|started| started.elapsed().as_micros())
+                                .unwrap_or(0)
+                        );
+                        outputs.await.unwrap_or((None, None))
+                    }
                 }
-                state.ready.push_back(id);
-            }
+            };
+            let output_join_us = output_join_started
+                .as_ref()
+                .map(|started| started.elapsed().as_micros());
+
+            *table.stdin[slot].lock().await = None;
+
+            let total_us = supervisor_started
+                .as_ref()
+                .map(|started| started.elapsed().as_micros());
+            let spawn_to_complete_us = spawn_finished_at
+                .as_ref()
+                .map(|started| started.elapsed().as_micros());
+
+            let Some(profile_status) = table.complete(id, slot, final_result) else {
+                return;
+            };
+            table.state_event.send_replace(());
+
+            profile::event(|| {
+                let (
+                    stdout_total,
+                    stderr_total,
+                    stdout_retained,
+                    stderr_retained,
+                    stdout_truncated,
+                    stderr_truncated,
+                ) = table.output.profile_totals(slot);
+                json!({
+                "event": "process_complete",
+                "process_id": id.0,
+                "command": profile_command.as_deref(),
+                "supervisor_start_us": supervisor_start_us,
+                "first_event_kind": first_event_kind,
+                "first_event_us": first_event_us,
+                "spawn_to_first_event_us": first_event_us.zip(supervisor_start_us)
+                    .map(|(event, start)| event.saturating_add(start)),
+                "stdout_first_read_us": stdout_first_read_us,
+                "stderr_first_read_us": stderr_first_read_us,
+                "terminate_us": terminate_us,
+                "output_join_us": output_join_us,
+                "spawn_to_complete_us": spawn_to_complete_us,
+                "total_us": total_us,
+                "stdout_total_bytes": stdout_total,
+                "stderr_total_bytes": stderr_total,
+                "stdout_retained_bytes": stdout_retained,
+                "stderr_retained_bytes": stderr_retained,
+                "stdout_truncated": stdout_truncated,
+                "stderr_truncated": stderr_truncated,
+                "status": profile_status,
+                "self_rss_before_bytes": rss_before_bytes,
+                "self_rss_after_bytes": profile::self_current_rss_bytes(),
+                "self_peak_rss_bytes": profile::self_peak_rss_bytes(),
+                "children_peak_rss_bytes": profile::children_peak_rss_bytes()
+                })
+            });
         });
 
         Ok(id)
     }
 
     pub async fn submit(
-        &self,
-        config: Arc<Config>,
-        request: CommandRequest,
-        wait_ms: u64,
-        inline_output_limit: usize,
-    ) -> Result<serde_json::Value, Fault> {
-        let max_output = config
-            .limits
-            .max_stdout_bytes
-            .max(config.limits.max_stderr_bytes);
-        let id = self.spawn(
-            config.clone(),
-            request,
-            config.limits.default_timeout_ms,
-            InputMode::Closed,
-        )?;
-
-        if wait_ms > 0 {
-            let entry = self.get(id.0)?;
-            let mut status = entry.status.clone();
-            if status.borrow().running {
-                let _ = tokio::time::timeout(Duration::from_millis(wait_ms), async {
-                    while status.borrow().running {
-                        if status.changed().await.is_err() {
-                            break;
-                        }
-                    }
-                })
-                .await;
-            }
-        }
-
-        let entry = self.get(id.0)?;
-        if entry.status.borrow().running {
-            return Ok(json!({"state": "submitted", "process_id": id.0}));
-        }
-
-        let mut completed =
-            self.read(id.0, 0, 0, inline_output_limit.min(max_output), max_output)?;
-        let object = completed
-            .as_object_mut()
-            .expect("process read result is an object");
-        object.insert("state".into(), json!("completed"));
-        object.insert("process_id".into(), json!(id.0));
-        Ok(completed)
-    }
-
-    pub fn start(
-        &self,
-        config: Arc<Config>,
+        self: &Arc<Self>,
+        config: &Config,
         request: CommandRequest,
     ) -> Result<serde_json::Value, Fault> {
-        let id = self.spawn(
-            config.clone(),
-            request,
-            config.limits.max_timeout_ms,
-            InputMode::Piped,
-        )?;
+        let id = self
+            .spawn(
+                config,
+                request,
+                config.limits.default_timeout_ms,
+                InputMode::Closed,
+            )
+            .await?;
         Ok(json!({"process_id": id.0}))
     }
 
-    pub fn list(&self) -> serde_json::Value {
-        let state = self.state.lock().unwrap();
-        let mut rows: Vec<_> = state
-            .entries
-            .iter()
-            .map(|(id, record)| {
-                let status = record.process.status.borrow().clone();
-                let duration_ms = status
-                    .duration_ms
-                    .unwrap_or_else(|| record.process.started.elapsed().as_millis() as u64);
-                json!({
-                    "process_id": id.0,
-                    "command": record.process.command,
-                    "status": status,
-                    "duration_ms": duration_ms,
-                    "completion_sequence": record.completion_sequence,
-                })
-            })
-            .collect();
-        rows.sort_by_key(|row| row["process_id"].as_u64().unwrap_or(0));
-        json!({
-            "processes": rows,
-            "running": state.running,
-            "ready": state.ready.len(),
-        })
+    pub async fn start(
+        self: &Arc<Self>,
+        config: &Config,
+        request: CommandRequest,
+    ) -> Result<serde_json::Value, Fault> {
+        let id = self
+            .spawn(
+                config,
+                request,
+                config.limits.max_timeout_ms,
+                InputMode::Piped,
+            )
+            .await?;
+        Ok(json!({"process_id": id.0}))
     }
 
-    pub fn ready(
-        &self,
-        after_sequence: u64,
-        limit: usize,
-        output_limit: usize,
-        max_results: usize,
-        max_output: usize,
-    ) -> Result<serde_json::Value, Fault> {
-        if limit == 0 || limit > max_results {
-            return Err(Fault::new(
-                "INVALID_REQUEST",
-                "ready result limit is outside configured bounds",
-            ));
-        }
-        if output_limit > max_output {
-            return Err(Fault::new(
-                "INVALID_REQUEST",
-                "ready output_limit is outside configured bounds",
-            ));
-        }
-
-        let state = self.state.lock().unwrap();
-        let oldest_available_sequence = state.ready.front().and_then(|id| {
-            state
-                .entries
-                .get(id)
-                .and_then(|record| record.completion_sequence)
-        });
-        let latest_sequence = state.next_completion.saturating_sub(1);
-        let gap = match oldest_available_sequence {
-            Some(oldest) => after_sequence.saturating_add(1) < oldest,
-            None => after_sequence < latest_sequence,
-        };
-
-        let mut rows = Vec::new();
-        let mut next_after_sequence = after_sequence;
-        for id in &state.ready {
-            if rows.len() >= limit {
-                break;
+    pub fn list(&self, config: &Config) -> serde_json::Value {
+        let core = self.core.lock().unwrap();
+        let now_ns = self.now_ns();
+        let mut slots = [0_usize; PROCESS_SLOTS];
+        let mut count = 0;
+        for slot in 0..PROCESS_SLOTS {
+            if core.id[slot] != 0 {
+                slots[count] = slot;
+                count += 1;
             }
-            let Some(record) = state.entries.get(id) else {
-                continue;
-            };
-            let Some(sequence) = record.completion_sequence else {
-                continue;
-            };
-            if sequence <= after_sequence {
-                continue;
+        }
+        slots[..count].sort_unstable_by_key(|slot| core.id[*slot]);
+
+        let mut running = Vec::with_capacity(count);
+        let mut completed = Vec::with_capacity(count);
+
+        for &slot in &slots[..count] {
+            let (stdout_bytes, stderr_bytes, truncated) = self.output.totals(slot);
+            if core.is_running(slot) {
+                running.push(json!({
+                    "process_id": core.id[slot],
+                    "command": config.command_name(core.command[slot]),
+                    "duration_ms": now_ns.saturating_sub(core.time_ns[slot]) / 1_000_000,
+                    "stdout_bytes": stdout_bytes,
+                    "stderr_bytes": stderr_bytes,
+                    "truncated": truncated,
+                }));
+            } else {
+                completed.push(json!({
+                    "process_id": core.id[slot],
+                    "command": config.command_name(core.command[slot]),
+                    "duration_ms": core.time_ns[slot] / 1_000_000,
+                    "exit_code": (core.result[slot] >= 0).then_some(core.result[slot]),
+                    "stopped": core.result[slot] == RESULT_STOPPED,
+                    "timed_out": core.result[slot] == RESULT_TIMED_OUT,
+                    "stdout_bytes": stdout_bytes,
+                    "stderr_bytes": stderr_bytes,
+                    "truncated": truncated,
+                }));
             }
-            let stdout = record.process.stdout.lock().unwrap();
-            let stderr = record.process.stderr.lock().unwrap();
-            let stdout_slice = (output_limit > 0)
-                .then(|| stdout.slice(0, output_limit))
-                .transpose()?;
-            let stderr_slice = (output_limit > 0)
-                .then(|| stderr.slice(0, output_limit))
-                .transpose()?;
-            let status = record.process.status.borrow().clone();
-            rows.push(json!({
-                "completion_sequence": sequence,
-                "process_id": id.0,
-                "command": record.process.command,
-                "status": status,
-                "stdout": stdout_slice.as_ref().map(|slice| &slice.text),
-                "stderr": stderr_slice.as_ref().map(|slice| &slice.text),
-                "stdout_bytes": stdout.total,
-                "stderr_bytes": stderr.total,
-                "stdout_next_offset": stdout_slice.as_ref().map(|slice| slice.next_offset),
-                "stderr_next_offset": stderr_slice.as_ref().map(|slice| slice.next_offset),
-                "truncated": stdout.truncated || stderr.truncated,
-            }));
-            next_after_sequence = sequence;
         }
 
-        Ok(json!({
-            "processes": rows,
-            "next_after_sequence": next_after_sequence,
-            "oldest_available_sequence": oldest_available_sequence,
-            "latest_sequence": latest_sequence,
-            "gap": gap,
-        }))
+        json!({
+            "running": running,
+            "completed": completed,
+        })
     }
 
     pub fn read(
@@ -555,45 +707,24 @@ impl ProcessTable {
                 "output limit is outside configured bounds",
             ));
         }
-        let entry = self.get(id)?;
-        let stdout = entry.stdout.lock().unwrap().slice(stdout_offset, limit)?;
-        let stderr = entry.stderr.lock().unwrap().slice(stderr_offset, limit)?;
-        let status = entry.status.borrow().clone();
-        Ok(json!({"stdout": stdout, "stderr": stderr, "status": status}))
-    }
 
-    pub async fn read_wait(
-        &self,
-        id: u64,
-        stdout_offset: u64,
-        stderr_offset: u64,
-        limit: usize,
-        max: usize,
-        wait_ms: u64,
-    ) -> Result<serde_json::Value, Fault> {
-        if wait_ms > 30_000 {
-            return Err(Fault::new(
-                "INVALID_REQUEST",
-                "wait_ms is outside configured bounds",
-            ));
-        }
-        let entry = self.get(id)?;
-        let has_new_data = || {
-            let stdout_total = entry.stdout.lock().unwrap().total;
-            let stderr_total = entry.stderr.lock().unwrap().total;
-            stdout_total > stdout_offset
-                || stderr_total > stderr_offset
-                || !entry.status.borrow().running
+        let core = self.core.lock().unwrap();
+        let slot = core.slot(id).ok_or_else(|| {
+            Fault::new("PROCESS_NOT_FOUND", "process ID is unknown or was evicted")
+        })?;
+        let stdout = self.output.slice(slot, false, stdout_offset, limit)?;
+        let stderr = self.output.slice(slot, true, stderr_offset, limit)?;
+        let state = if core.is_running(slot) {
+            "running"
+        } else {
+            "completed"
         };
-        if wait_ms > 0 && !has_new_data() {
-            let mut activity = entry.activity.clone();
-            let _ = activity.borrow_and_update();
-            if !has_new_data() {
-                let _ =
-                    tokio::time::timeout(Duration::from_millis(wait_ms), activity.changed()).await;
-            }
-        }
-        self.read(id, stdout_offset, stderr_offset, limit, max)
+
+        Ok(json!({
+            "state": state,
+            "stdout": stdout,
+            "stderr": stderr,
+        }))
     }
 
     pub async fn input(
@@ -609,63 +740,144 @@ impl ProcessTable {
                 "input exceeds max_file_read_bytes",
             ));
         }
-        let entry = self.get(id)?;
-        let mut stdin = entry.stdin.lock().await;
-        let pipe = stdin
-            .as_mut()
-            .ok_or_else(|| Fault::new("IO_ERROR", "process stdin is closed"))?;
-        tokio::time::timeout(
-            Duration::from_millis(timeout_ms),
-            pipe.write_all(text.as_bytes()),
-        )
-        .await
-        .map_err(|_| Fault::new("COMMAND_TIMEOUT", "process stdin write timed out"))?
-        .map_err(|e| {
-            Fault::with(
-                "IO_ERROR",
-                "process stdin write failed",
-                json!({"error": e.to_string()}),
-            )
-        })?;
-        Ok(json!({"bytes_written": text.len()}))
+
+        let mut state = self.state_event.subscribe();
+        loop {
+            let slot = {
+                let core = self.core.lock().unwrap();
+                core.slot(id).ok_or_else(|| {
+                    Fault::new("PROCESS_NOT_FOUND", "process ID is unknown or was evicted")
+                })?
+            };
+
+            let mut stdin = self.stdin[slot].lock().await;
+            {
+                let core = self.core.lock().unwrap();
+                if core.id[slot] != id || !core.is_running(slot) {
+                    return Err(Fault::new(
+                        "PROCESS_NOT_FOUND",
+                        "process ID is unknown, completed, or was evicted",
+                    ));
+                }
+            }
+
+            if let Some(pipe) = stdin.as_mut() {
+                tokio::time::timeout(
+                    Duration::from_millis(timeout_ms),
+                    pipe.write_all(text.as_bytes()),
+                )
+                .await
+                .map_err(|_| Fault::new("COMMAND_TIMEOUT", "process stdin write timed out"))?
+                .map_err(|e| {
+                    Fault::with(
+                        "IO_ERROR",
+                        "process stdin write failed",
+                        json!({"error": e.to_string()}),
+                    )
+                })?;
+                return Ok(json!({"bytes_written": text.len()}));
+            }
+
+            drop(stdin);
+            if state.changed().await.is_err() {
+                return Err(Fault::new("IO_ERROR", "process state watcher stopped"));
+            }
+        }
     }
 
     pub async fn stop(&self, id: u64) -> Result<serde_json::Value, Fault> {
-        let entry = self.get(id)?;
-        if let Some(sender) = entry.stop.lock().unwrap().take() {
-            let _ = sender.send(());
+        let mut state = self.state_event.subscribe();
+
+        let pgid = loop {
+            let pgid = {
+                let mut core = self.core.lock().unwrap();
+                let slot = core.slot(id).ok_or_else(|| {
+                    Fault::new("PROCESS_NOT_FOUND", "process ID is unknown or was evicted")
+                })?;
+                if core.is_completed(slot) {
+                    return Ok(json!({"status": Self::status_locked(&core, slot)}));
+                }
+                core.result[slot] = RESULT_STOPPING;
+                core.pgid[slot]
+            };
+            if pgid != 0 {
+                break pgid;
+            }
+            if state.changed().await.is_err() {
+                return Err(Fault::new("IO_ERROR", "process state watcher stopped"));
+            }
+        };
+
+        terminate_group(pgid).await.map_err(|error| {
+            Fault::with(
+                "IO_ERROR",
+                "failed to terminate process group",
+                json!({"error": error.to_string()}),
+            )
+        })?;
+
+        loop {
+            let status = {
+                let core = self.core.lock().unwrap();
+                let slot = core.slot(id).ok_or_else(|| {
+                    Fault::new("PROCESS_NOT_FOUND", "process ID is unknown or was evicted")
+                })?;
+                core.is_completed(slot)
+                    .then(|| Self::status_locked(&core, slot))
+            };
+            if let Some(status) = status {
+                return Ok(json!({"status": status}));
+            }
+            if state.changed().await.is_err() {
+                return Err(Fault::new("IO_ERROR", "process state watcher stopped"));
+            }
         }
-        let mut status = entry.status.clone();
-        while status.borrow().running {
-            status
-                .changed()
-                .await
-                .map_err(|_| Fault::new("IO_ERROR", "process watcher stopped"))?;
-        }
-        Ok(json!({"status": status.borrow().clone()}))
     }
 
     pub async fn shutdown(&self) {
-        let entries: Vec<_> = self
-            .state
-            .lock()
-            .unwrap()
-            .entries
-            .values()
-            .filter(|record| record.active)
-            .map(|record| record.process.clone())
-            .collect();
-        for entry in &entries {
-            if let Some(sender) = entry.stop.lock().unwrap().take() {
-                let _ = sender.send(());
-            }
-        }
-        for entry in entries {
-            let mut status = entry.status.clone();
-            while status.borrow().running {
-                if status.changed().await.is_err() {
-                    break;
+        let mut state = self.state_event.subscribe();
+        let (pgids, count) = loop {
+            let mut pgids = [0_u32; PROCESS_SLOTS];
+            let mut count = 0_usize;
+            let mut waiting_for_pgid = false;
+            {
+                let mut core = self.core.lock().unwrap();
+                for slot in 0..PROCESS_SLOTS {
+                    if !core.is_running(slot) {
+                        continue;
+                    }
+                    core.result[slot] = RESULT_STOPPING;
+                    let pgid = core.pgid[slot];
+                    if pgid == 0 {
+                        waiting_for_pgid = true;
+                    } else {
+                        pgids[count] = pgid;
+                        count += 1;
+                    }
                 }
+            }
+            if !waiting_for_pgid {
+                break (pgids, count);
+            }
+            if state.changed().await.is_err() {
+                return;
+            }
+        };
+
+        let mut tasks = JoinSet::new();
+        for pgid in pgids.into_iter().take(count) {
+            tasks.spawn(async move {
+                let _ = terminate_group(pgid).await;
+            });
+        }
+        while tasks.join_next().await.is_some() {}
+
+        loop {
+            if self.core.lock().unwrap().running_count() == 0 {
+                break;
+            }
+            if state.changed().await.is_err() {
+                break;
             }
         }
     }
@@ -673,18 +885,126 @@ impl ProcessTable {
 
 async fn drain_into<R: AsyncRead + Unpin>(
     mut reader: R,
-    buffer: Arc<Mutex<Buffer>>,
-    cap: usize,
-    activity: watch::Sender<u64>,
-) -> io::Result<()> {
+    table: &ProcessTable,
+    slot: usize,
+    stderr: bool,
+    spawn_finished_at: Option<Instant>,
+) -> io::Result<Option<u64>> {
     let mut chunk = [0_u8; 8192];
+    let mut first_read_us = None;
     loop {
         let count = reader.read(&mut chunk).await?;
         if count == 0 {
             break;
         }
-        buffer.lock().unwrap().append(&chunk[..count], cap);
-        activity.send_modify(|version| *version = version.wrapping_add(1));
+
+        if first_read_us.is_none()
+            && let Some(spawn_finished_at) = spawn_finished_at
+        {
+            first_read_us = Some(
+                spawn_finished_at
+                    .elapsed()
+                    .as_micros()
+                    .min(u64::MAX as u128) as u64,
+            );
+        }
+        table.output.append(slot, stderr, &chunk[..count]);
     }
-    Ok(())
+    Ok(first_read_us)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn core_state_is_derived_from_id_and_result() {
+        let mut core = Core::new();
+
+        core.id[3] = 7;
+        assert!(core.is_running(3));
+        assert!(!core.is_completed(3));
+        assert_eq!(core.running_count(), 1);
+
+        core.result[3] = 0;
+        assert!(!core.is_running(3));
+        assert!(core.is_completed(3));
+        assert_eq!(core.running_count(), 0);
+
+        core.clear_slot(3);
+        assert_eq!(core.id[3], 0);
+        assert!(!core.is_running(3));
+        assert!(!core.is_completed(3));
+    }
+
+    #[test]
+    fn oldest_completed_slot_uses_process_id_order() {
+        let mut core = Core::new();
+
+        core.id[2] = 12;
+        core.result[2] = 0;
+        core.id[5] = 9;
+        core.result[5] = RESULT_STOPPED;
+        core.id[7] = 15;
+        core.result[7] = RESULT_RUNNING;
+
+        assert_eq!(core.oldest_completed_slot(), Some(5));
+    }
+
+    #[test]
+    fn output_buffers_reuse_preallocated_capacity() {
+        let output = OutputStore::new(1024, 1024);
+        output.append(2, false, b"abc");
+
+        let before = output.streams[OutputStore::index(2, false)]
+            .lock()
+            .unwrap()
+            .bytes
+            .capacity();
+        output.reset(2);
+        let after = output.streams[OutputStore::index(2, false)]
+            .lock()
+            .unwrap()
+            .bytes
+            .capacity();
+
+        assert_eq!(before, 1024);
+        assert_eq!(after, 1024);
+    }
+
+    #[test]
+    fn pgid_and_reservation_rollback_publish_state_changes() {
+        let table = ProcessTable::test_new();
+        {
+            let mut core = table.core.lock().unwrap();
+            core.id[0] = 1;
+            core.result[0] = RESULT_RUNNING;
+        }
+
+        let pgid_change = table.state_event.subscribe();
+        table.set_pgid(ProcessId(1), 0, 42);
+        assert!(pgid_change.has_changed().unwrap());
+        assert_eq!(table.core.lock().unwrap().pgid[0], 42);
+
+        let rollback = table.state_event.subscribe();
+        table.release_reserved(ProcessId(1), 0);
+        assert!(rollback.has_changed().unwrap());
+        assert_eq!(table.core.lock().unwrap().id[0], 0);
+    }
+
+    #[test]
+    fn completion_has_no_sequence_or_ready_queue_state() {
+        let table = ProcessTable::test_new();
+        {
+            let mut core = table.core.lock().unwrap();
+            core.id[0] = 1;
+            core.time_ns[0] = table.now_ns();
+        }
+
+        let status = table.complete(ProcessId(1), 0, 0).unwrap();
+
+        assert!(!status.running);
+        assert_eq!(status.exit_code, Some(0));
+        assert!(table.core.lock().unwrap().is_completed(0));
+    }
 }

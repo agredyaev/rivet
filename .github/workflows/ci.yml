@@ -52,6 +52,7 @@ jobs:
         run: |
           rustup target add aarch64-apple-darwin
           cargo build --locked --release --target aarch64-apple-darwin
+          file target/aarch64-apple-darwin/release/rivet | grep -Eq 'Mach-O 64-bit executable arm64'
       - if: runner.os == 'macOS'
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -84,6 +85,9 @@ jobs:
           targets: x86_64-unknown-linux-gnu, aarch64-unknown-linux-gnu
       - run: python3 -m pip install cargo-zigbuild==0.23.4
       - run: cargo zigbuild --locked --release --target x86_64-unknown-linux-gnu --target aarch64-unknown-linux-gnu
+      - run: |
+          file target/x86_64-unknown-linux-gnu/release/rivet | grep -Eq 'ELF 64-bit.*x86-64'
+          file target/aarch64-unknown-linux-gnu/release/rivet | grep -Eq 'ELF 64-bit.*ARM aarch64'
       - run: python3 tests/smoke.py target/x86_64-unknown-linux-gnu/release/rivet
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -136,6 +140,14 @@ jobs:
 
           (cd dist && sha256sum rivet-*.zip > SHA256SUMS)
           (cd dist && sha256sum -c SHA256SUMS)
+
+          expected="$(printf '%s\n' SHA256SUMS rivet-darwin-arm64.zip rivet-linux-aarch64.zip rivet-linux-x64.zip | sort)"
+          actual="$(find dist -maxdepth 1 -type f -exec basename {} \; | sort)"
+          if [[ "$actual" != "$expected" ]]; then
+            echo "::error::Unexpected release artifact set."
+            printf 'Expected:\n%s\nActual:\n%s\n' "$expected" "$actual"
+            exit 1
+          fi
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: rivet-release-assets

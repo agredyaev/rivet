@@ -8,7 +8,7 @@ use std::{
     sync::Arc,
 };
 
-type CommandSelection = (String, String, Option<Vec<String>>);
+type CommandSelection = (String, CommandConfig);
 
 struct Scope {
     roots: Vec<PathBuf>,
@@ -24,7 +24,11 @@ const BUILT_INS: [(&str, &str, Option<&str>); 6] = [
         "git",
         Some("status,diff,log,show,add,commit,rev-parse,ls-files"),
     ),
-    ("cargo", "cargo", Some("check,test,fmt,clippy,metadata")),
+    (
+        "cargo",
+        "cargo",
+        Some("check,test,fmt,clippy,metadata,build"),
+    ),
     ("make", "make", None),
 ];
 
@@ -111,8 +115,15 @@ fn collect_scope<R: BufRead, W: Write>(
             add_custom = chosen.contains(&BUILT_INS.len());
             for index in chosen.into_iter().filter(|index| *index < BUILT_INS.len()) {
                 let (name, executable, access) = BUILT_INS[index];
-                let allowed = access.map(|items| items.split(',').map(str::to_owned).collect());
-                commands.push((name.to_owned(), executable.to_owned(), allowed));
+                let allowed_subcommands =
+                    access.map(|items| items.split(',').map(str::to_owned).collect());
+                commands.push((
+                    name.to_owned(),
+                    CommandConfig {
+                        executable: executable.to_owned(),
+                        allowed_subcommands,
+                    },
+                ));
             }
             break;
         }
@@ -127,7 +138,7 @@ fn collect_scope<R: BufRead, W: Write>(
                     || executable.is_empty()
                     || name.chars().any(char::is_whitespace)
                     || name.contains('=')
-                    || commands.iter().any(|(existing, _, _)| existing == &name)
+                    || commands.iter().any(|(existing, _)| existing == &name)
                 {
                     writeln!(
                     output,
@@ -158,7 +169,13 @@ fn collect_scope<R: BufRead, W: Write>(
                     writeln!(output, "Enter one or more arguments, or *.")
                         .map_err(|error| error.to_string())?;
                 };
-                commands.push((name, executable, allowed));
+                commands.push((
+                    name,
+                    CommandConfig {
+                        executable,
+                        allowed_subcommands: allowed,
+                    },
+                ));
                 let add_another = read_line(input, output, "Add another custom command? [y/N]: ")
                     .map_err(|error| error.to_string())?;
                 if !matches!(add_another.to_ascii_lowercase().as_str(), "y" | "yes") {
@@ -182,13 +199,18 @@ fn collect_scope<R: BufRead, W: Write>(
     if commands.is_empty() {
         writeln!(output, "  {check} Commands: none").map_err(|error| error.to_string())?;
     } else {
-        for (name, executable, allowed) in &commands {
-            let access = allowed
+        for (name, command) in &commands {
+            let access = command
+                .allowed_subcommands
                 .as_ref()
                 .map(|values| values.join(", "))
                 .unwrap_or_else(|| "any arguments".to_owned());
-            writeln!(output, "  {check} {name} → {executable} ({access})")
-                .map_err(|error| error.to_string())?;
+            writeln!(
+                output,
+                "  {check} {name} → {} ({access})",
+                command.executable
+            )
+            .map_err(|error| error.to_string())?;
         }
     }
     Ok(Scope { roots, commands })
@@ -197,9 +219,12 @@ fn collect_scope<R: BufRead, W: Write>(
 #[cfg(test)]
 fn scope_args(scope: &Scope) -> Vec<String> {
     let mut args = Vec::new();
-    for (name, executable, allowed) in &scope.commands {
-        args.extend(["--allow-command".into(), format!("{name}={executable}")]);
-        match allowed {
+    for (name, command) in &scope.commands {
+        args.extend([
+            "--allow-command".into(),
+            format!("{name}={}", command.executable),
+        ]);
+        match &command.allowed_subcommands {
             Some(values) => {
                 for value in values {
                     args.extend(["--allow-subcommand".into(), format!("{name}={value}")]);
@@ -211,25 +236,8 @@ fn scope_args(scope: &Scope) -> Vec<String> {
     args
 }
 
-#[derive(Default)]
-struct PendingCommand {
-    executable: Option<String>,
-    allow_any_args: bool,
-    allowed_subcommands: Vec<String>,
-}
-
-fn assignment(value: &str) -> Result<(&str, &str), String> {
-    let Some((name, setting)) = value.split_once('=') else {
-        return Err("command option requires NAME=VALUE".into());
-    };
-    if name.is_empty() || setting.is_empty() {
-        return Err("command option requires nonempty NAME and VALUE".into());
-    }
-    Ok((name, setting))
-}
-
 fn parse_args(args: Vec<String>) -> Result<(Vec<CommandSelection>, bool, bool), String> {
-    let mut commands: BTreeMap<String, PendingCommand> = BTreeMap::new();
+    let mut commands: BTreeMap<String, crate::PendingCommand> = BTreeMap::new();
     let mut has_command_flags = false;
     let mut network = false;
     let mut iter = args.into_iter();
@@ -240,7 +248,7 @@ fn parse_args(args: Vec<String>) -> Result<(Vec<CommandSelection>, bool, bool), 
             "--allow-command" => {
                 has_command_flags = true;
                 let value = iter.next().ok_or("--allow-command requires NAME=VALUE")?;
-                let (name, executable) = assignment(&value)?;
+                let (name, executable) = crate::assignment("command option", &value)?;
                 let pending = commands.entry(name.to_owned()).or_default();
                 if pending.executable.replace(executable.to_owned()).is_some() {
                     return Err(format!("duplicate --allow-command for {name}"));
@@ -251,7 +259,7 @@ fn parse_args(args: Vec<String>) -> Result<(Vec<CommandSelection>, bool, bool), 
                 let value = iter
                     .next()
                     .ok_or("--allow-subcommand requires NAME=VALUE")?;
-                let (name, subcommand) = assignment(&value)?;
+                let (name, subcommand) = crate::assignment("command option", &value)?;
                 commands
                     .entry(name.to_owned())
                     .or_default()
@@ -275,43 +283,10 @@ fn parse_args(args: Vec<String>) -> Result<(Vec<CommandSelection>, bool, bool), 
 
     let mut parsed = Vec::with_capacity(commands.len());
     for (name, pending) in commands {
-        let executable = pending
-            .executable
-            .ok_or_else(|| format!("{name}: --allow-command NAME=EXECUTABLE is required"))?;
-        let allowed = if pending.allow_any_args {
-            if !pending.allowed_subcommands.is_empty() {
-                return Err(format!(
-                    "{name}: --allow-any-args cannot be combined with --allow-subcommand"
-                ));
-            }
-            None
-        } else {
-            if pending.allowed_subcommands.is_empty() {
-                return Err(format!(
-                    "{name}: specify --allow-any-args or at least one --allow-subcommand"
-                ));
-            }
-            Some(pending.allowed_subcommands)
-        };
-        parsed.push((name, executable, allowed));
+        let command = pending.finish(&name)?;
+        parsed.push((name, command));
     }
     Ok((parsed, has_command_flags, network))
-}
-
-fn command_specs(commands: Vec<CommandSelection>) -> BTreeMap<String, CommandConfig> {
-    commands
-        .into_iter()
-        .map(|(name, executable, allowed)| {
-            (
-                name,
-                CommandConfig {
-                    executable,
-                    allow_any_args: allowed.is_none(),
-                    allowed_subcommands: allowed,
-                },
-            )
-        })
-        .collect()
 }
 
 pub async fn run(args: Vec<String>) -> ExitCode {
@@ -353,14 +328,17 @@ pub async fn run(args: Vec<String>) -> ExitCode {
         selected.commands = supplied_commands;
     }
 
-    let config =
-        match Config::native_session(selected.roots, command_specs(selected.commands), network) {
-            Ok(config) => Arc::new(config),
-            Err(error) => {
-                eprintln!("CONFIG_ERROR: {error}");
-                return ExitCode::FAILURE;
-            }
-        };
+    let config = match Config::native_session(
+        selected.roots,
+        selected.commands.into_iter().collect(),
+        network,
+    ) {
+        Ok(config) => Arc::new(config),
+        Err(error) => {
+            eprintln!("CONFIG_ERROR: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
     if let Err(error) = config.doctor() {
         eprintln!("DOCTOR_ERROR: {error}");
         return ExitCode::FAILURE;
@@ -397,6 +375,7 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "git=ls-files"));
         assert!(args.iter().any(|arg| arg == "cargo=check"));
         assert!(args.iter().any(|arg| arg == "cargo=metadata"));
+        assert!(args.iter().any(|arg| arg == "cargo=build"));
         assert!(args.iter().any(|arg| arg == "rg=rg"));
         assert!(args.iter().any(|arg| arg == "http=curl"));
         assert!(args.iter().any(|arg| arg == "http=GET"));
