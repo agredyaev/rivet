@@ -7,6 +7,8 @@ mod config;
 mod filesystem;
 mod mcp;
 mod process;
+mod profile;
+mod sandbox;
 mod session;
 mod tunnel;
 
@@ -19,10 +21,37 @@ struct PendingCommand {
     allowed_subcommands: Vec<String>,
 }
 
+impl PendingCommand {
+    fn finish(self, name: &str) -> Result<config::CommandConfig, String> {
+        let executable = self
+            .executable
+            .ok_or_else(|| format!("{name}: --allow-command NAME=EXECUTABLE is required"))?;
+        let allowed_subcommands = if self.allow_any_args {
+            if !self.allowed_subcommands.is_empty() {
+                return Err(format!(
+                    "{name}: --allow-any-args cannot be combined with --allow-subcommand"
+                ));
+            }
+            None
+        } else {
+            if self.allowed_subcommands.is_empty() {
+                return Err(format!(
+                    "{name}: specify --allow-any-args or at least one --allow-subcommand"
+                ));
+            }
+            Some(self.allowed_subcommands)
+        };
+        Ok(config::CommandConfig {
+            executable,
+            allowed_subcommands,
+        })
+    }
+}
+
 fn print_usage(action: Option<&str>) {
     match action {
         Some("session") => println!(
-            "Usage: rivet session [--root PATH] [--allow-command NAME=EXECUTABLE] [--allow-subcommand NAME=VALUE] [--allow-any-args NAME]\nWithout command flags, Rivet prompts for built-in and custom commands."
+            "Usage: rivet session [--network] [--allow-command NAME=EXECUTABLE] [--allow-subcommand NAME=VALUE] [--allow-any-args NAME]\nThe current directory is the workspace root. Child network access is disabled unless --network is supplied. Without command flags, Rivet prompts for built-in and custom commands. Tunnel credentials come from CONTROL_PLANE_TUNNEL_ID and CONTROL_PLANE_API_KEY; missing values are prompted with terminal echo disabled."
         ),
         Some(action) if matches!(action, "serve" | "doctor" | "commands" | "config-check") => {
             println!(
@@ -57,36 +86,8 @@ async fn main() -> ExitCode {
         print_usage(None);
         return ExitCode::SUCCESS;
     }
-    if action == "session-mcp" {
-        let executable = match env::current_exe() {
-            Ok(path) => path,
-            Err(error) => {
-                eprintln!("Cannot locate Rivet executable: {error}");
-                return ExitCode::FAILURE;
-            }
-        };
-        let status = match std::process::Command::new(executable)
-            .arg("serve")
-            .args(args)
-            .env_remove("CONTROL_PLANE_API_KEY")
-            .env_remove("OPENAI_API_KEY")
-            .env_remove("OPENAI_ADMIN_KEY")
-            .status()
-        {
-            Ok(status) => status,
-            Err(error) => {
-                eprintln!("Could not start Rivet MCP server: {error}");
-                return ExitCode::FAILURE;
-            }
-        };
-        return if status.success() {
-            ExitCode::SUCCESS
-        } else {
-            ExitCode::FAILURE
-        };
-    }
     if action == "session" {
-        return session::run(args.collect());
+        return session::run(args.collect()).await;
     }
     let mut path = PathBuf::from("./rivet.toml");
     let mut roots = Vec::new();
@@ -157,25 +158,7 @@ async fn main() -> ExitCode {
 
     let command_specs = command_args
         .into_iter()
-        .map(|(name, pending)| {
-            let executable = pending
-                .executable
-                .ok_or_else(|| format!("{name}: --allow-command NAME=EXECUTABLE is required"))?;
-            let allowed_subcommands =
-                if pending.allow_any_args && pending.allowed_subcommands.is_empty() {
-                    None
-                } else {
-                    Some(pending.allowed_subcommands)
-                };
-            Ok((
-                name,
-                config::CommandConfig {
-                    executable,
-                    allow_any_args: pending.allow_any_args,
-                    allowed_subcommands,
-                },
-            ))
-        })
+        .map(|(name, pending)| pending.finish(&name).map(|command| (name, command)))
         .collect::<Result<BTreeMap<_, _>, String>>();
     let command_specs = match command_specs {
         Ok(commands) => commands,
@@ -198,13 +181,13 @@ async fn main() -> ExitCode {
         }
         "doctor" => config.doctor().map(|()| println!("doctor ok")),
         "commands" => {
-            for (name, entry) in &config.commands {
-                let authorization = if entry.allow_any_args {
-                    "any args".to_owned()
-                } else {
-                    entry.allowed_subcommands.join(",")
-                };
-                println!("{name}\t{}\t{authorization}", entry.path.display());
+            for entry in &config.commands {
+                let authorization = entry
+                    .allowed_subcommands
+                    .as_deref()
+                    .map(|values| values.join(","))
+                    .unwrap_or_else(|| "any args".to_owned());
+                println!("{}\t{}\t{authorization}", entry.name, entry.path.display());
             }
             Ok(())
         }

@@ -1,13 +1,18 @@
+use crate::config::{CommandConfig, Config};
 use std::{
+    collections::BTreeMap,
     env,
     io::{self, BufRead, IsTerminal, Write},
     path::{Path, PathBuf},
     process::ExitCode,
+    sync::Arc,
 };
+
+type CommandSelection = (String, CommandConfig);
 
 struct Scope {
     roots: Vec<PathBuf>,
-    commands: Vec<(String, String, Option<Vec<String>>)>,
+    commands: Vec<CommandSelection>,
 }
 
 const BUILT_INS: [(&str, &str, Option<&str>); 6] = [
@@ -19,7 +24,11 @@ const BUILT_INS: [(&str, &str, Option<&str>); 6] = [
         "git",
         Some("status,diff,log,show,add,commit,rev-parse,ls-files"),
     ),
-    ("cargo", "cargo", Some("check,test,fmt,clippy,metadata")),
+    (
+        "cargo",
+        "cargo",
+        Some("check,test,fmt,clippy,metadata,build"),
+    ),
     ("make", "make", None),
 ];
 
@@ -39,7 +48,6 @@ fn collect_scope<R: BufRead, W: Write>(
     input: &mut R,
     output: &mut W,
     cwd: &Path,
-    preset_roots: &[PathBuf],
     prompt_commands: bool,
     color: bool,
 ) -> Result<Scope, String> {
@@ -50,31 +58,13 @@ fn collect_scope<R: BufRead, W: Write>(
     };
     let check = if color { "\x1b[32m✓\x1b[0m" } else { "✓" };
     writeln!(output, "\n{heading}: {}", cwd.display()).map_err(|error| error.to_string())?;
-    let input_roots = if preset_roots.is_empty() {
-        let root = read_line(
-            input,
-            output,
-            "Workspace directory (Enter keeps this directory): ",
-        )
-        .map_err(|error| error.to_string())?;
-        vec![if root.is_empty() {
-            cwd.to_path_buf()
-        } else {
-            PathBuf::from(root)
-        }]
-    } else {
-        preset_roots.to_vec()
-    };
-    let mut roots = Vec::new();
-    for root in input_roots {
-        let root = root
-            .canonicalize()
-            .map_err(|error| format!("Cannot use workspace {}: {error}", root.display()))?;
-        if !root.is_dir() {
-            return Err(format!("Workspace is not a directory: {}", root.display()));
-        }
-        roots.push(root);
+    let root = cwd
+        .canonicalize()
+        .map_err(|error| format!("Cannot use workspace {}: {error}", cwd.display()))?;
+    if !root.is_dir() {
+        return Err(format!("Workspace is not a directory: {}", root.display()));
     }
+    let roots = vec![root];
 
     let mut commands = Vec::new();
     if prompt_commands {
@@ -125,8 +115,15 @@ fn collect_scope<R: BufRead, W: Write>(
             add_custom = chosen.contains(&BUILT_INS.len());
             for index in chosen.into_iter().filter(|index| *index < BUILT_INS.len()) {
                 let (name, executable, access) = BUILT_INS[index];
-                let allowed = access.map(|items| items.split(',').map(str::to_owned).collect());
-                commands.push((name.to_owned(), executable.to_owned(), allowed));
+                let allowed_subcommands =
+                    access.map(|items| items.split(',').map(str::to_owned).collect());
+                commands.push((
+                    name.to_owned(),
+                    CommandConfig {
+                        executable: executable.to_owned(),
+                        allowed_subcommands,
+                    },
+                ));
             }
             break;
         }
@@ -141,7 +138,7 @@ fn collect_scope<R: BufRead, W: Write>(
                     || executable.is_empty()
                     || name.chars().any(char::is_whitespace)
                     || name.contains('=')
-                    || commands.iter().any(|(existing, _, _)| existing == &name)
+                    || commands.iter().any(|(existing, _)| existing == &name)
                 {
                     writeln!(
                     output,
@@ -172,7 +169,13 @@ fn collect_scope<R: BufRead, W: Write>(
                     writeln!(output, "Enter one or more arguments, or *.")
                         .map_err(|error| error.to_string())?;
                 };
-                commands.push((name, executable, allowed));
+                commands.push((
+                    name,
+                    CommandConfig {
+                        executable,
+                        allowed_subcommands: allowed,
+                    },
+                ));
                 let add_another = read_line(input, output, "Add another custom command? [y/N]: ")
                     .map_err(|error| error.to_string())?;
                 if !matches!(add_another.to_ascii_lowercase().as_str(), "y" | "yes") {
@@ -196,26 +199,32 @@ fn collect_scope<R: BufRead, W: Write>(
     if commands.is_empty() {
         writeln!(output, "  {check} Commands: none").map_err(|error| error.to_string())?;
     } else {
-        for (name, executable, allowed) in &commands {
-            let access = allowed
+        for (name, command) in &commands {
+            let access = command
+                .allowed_subcommands
                 .as_ref()
                 .map(|values| values.join(", "))
                 .unwrap_or_else(|| "any arguments".to_owned());
-            writeln!(output, "  {check} {name} → {executable} ({access})")
-                .map_err(|error| error.to_string())?;
+            writeln!(
+                output,
+                "  {check} {name} → {} ({access})",
+                command.executable
+            )
+            .map_err(|error| error.to_string())?;
         }
     }
     Ok(Scope { roots, commands })
 }
 
+#[cfg(test)]
 fn scope_args(scope: &Scope) -> Vec<String> {
     let mut args = Vec::new();
-    for root in &scope.roots {
-        args.extend(["--root".into(), root.display().to_string()]);
-    }
-    for (name, executable, allowed) in &scope.commands {
-        args.extend(["--allow-command".into(), format!("{name}={executable}")]);
-        match allowed {
+    for (name, command) in &scope.commands {
+        args.extend([
+            "--allow-command".into(),
+            format!("{name}={}", command.executable),
+        ]);
+        match &command.allowed_subcommands {
             Some(values) => {
                 for value in values {
                     args.extend(["--allow-subcommand".into(), format!("{name}={value}")]);
@@ -227,59 +236,73 @@ fn scope_args(scope: &Scope) -> Vec<String> {
     args
 }
 
-fn package_root() -> Result<PathBuf, String> {
-    let executable = env::current_exe().map_err(|error| error.to_string())?;
-    let root = executable
-        .parent()
-        .and_then(Path::parent)
-        .ok_or("Cannot locate Rivet package directory")?;
-    if root.join("rivet.toml").is_file() {
-        return Ok(root.to_path_buf());
+fn parse_args(args: Vec<String>) -> Result<(Vec<CommandSelection>, bool, bool), String> {
+    let mut commands: BTreeMap<String, crate::PendingCommand> = BTreeMap::new();
+    let mut has_command_flags = false;
+    let mut network = false;
+    let mut iter = args.into_iter();
+
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--network" => network = true,
+            "--allow-command" => {
+                has_command_flags = true;
+                let value = iter.next().ok_or("--allow-command requires NAME=VALUE")?;
+                let (name, executable) = crate::assignment("command option", &value)?;
+                let pending = commands.entry(name.to_owned()).or_default();
+                if pending.executable.replace(executable.to_owned()).is_some() {
+                    return Err(format!("duplicate --allow-command for {name}"));
+                }
+            }
+            "--allow-subcommand" => {
+                has_command_flags = true;
+                let value = iter
+                    .next()
+                    .ok_or("--allow-subcommand requires NAME=VALUE")?;
+                let (name, subcommand) = crate::assignment("command option", &value)?;
+                commands
+                    .entry(name.to_owned())
+                    .or_default()
+                    .allowed_subcommands
+                    .push(subcommand.to_owned());
+            }
+            "--allow-any-args" => {
+                has_command_flags = true;
+                let name = iter
+                    .next()
+                    .ok_or("--allow-any-args requires a command name")?;
+                let pending = commands.entry(name.clone()).or_default();
+                if pending.allow_any_args {
+                    return Err(format!("duplicate --allow-any-args for {name}"));
+                }
+                pending.allow_any_args = true;
+            }
+            _ => return Err(format!("unknown argument: {arg}")),
+        }
     }
-    Ok(PathBuf::from(env!("CARGO_MANIFEST_DIR")))
+
+    let mut parsed = Vec::with_capacity(commands.len());
+    for (name, pending) in commands {
+        let command = pending.finish(&name)?;
+        parsed.push((name, command));
+    }
+    Ok((parsed, has_command_flags, network))
 }
 
-fn launch(args: &[String]) -> Result<ExitCode, String> {
-    let root = package_root()?;
-    let rivet = env::current_exe().map_err(|error| error.to_string())?;
-    let config = root.join("rivet.toml");
-    Ok(crate::tunnel::run(&root, &rivet, &config, args))
-}
-
-pub fn run(args: Vec<String>) -> ExitCode {
+pub async fn run(args: Vec<String>) -> ExitCode {
     if args.iter().any(|arg| arg == "--help" || arg == "-h") {
         crate::print_usage(Some("session"));
         return ExitCode::SUCCESS;
     }
-    let mut roots = Vec::new();
-    let mut passthrough = Vec::new();
-    let mut has_command_flags = false;
-    let mut iter = args.into_iter();
-    while let Some(arg) = iter.next() {
-        if arg == "--root" {
-            match iter.next() {
-                Some(root) => roots.push(PathBuf::from(root)),
-                None => {
-                    eprintln!("--root requires a path");
-                    return ExitCode::FAILURE;
-                }
-            }
-        } else {
-            if matches!(
-                arg.as_str(),
-                "--allow-command" | "--allow-subcommand" | "--allow-any-args"
-            ) {
-                has_command_flags = true;
-                let Some(value) = iter.next() else {
-                    eprintln!("{arg} requires a value");
-                    return ExitCode::FAILURE;
-                };
-                passthrough.extend([arg, value]);
-                continue;
-            }
-            passthrough.push(arg);
+
+    let (supplied_commands, has_command_flags, network) = match parse_args(args) {
+        Ok(parsed) => parsed,
+        Err(error) => {
+            eprintln!("{error}");
+            return ExitCode::FAILURE;
         }
-    }
+    };
+
     let cwd = match env::current_dir() {
         Ok(path) => path,
         Err(error) => {
@@ -288,17 +311,12 @@ pub fn run(args: Vec<String>) -> ExitCode {
         }
     };
     let color = io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
-    let selected = {
+    let mut selected = {
+        // Scope collection temporarily locks stdio. Keep those guards inside
+        // this block so credential prompts can acquire stdin/stdout afterwards.
         let mut input = io::stdin().lock();
         let mut output = io::stdout().lock();
-        match collect_scope(
-            &mut input,
-            &mut output,
-            &cwd,
-            &roots,
-            !has_command_flags,
-            color,
-        ) {
+        match collect_scope(&mut input, &mut output, &cwd, !has_command_flags, color) {
             Ok(scope) => scope,
             Err(error) => {
                 eprintln!("{error}");
@@ -306,10 +324,32 @@ pub fn run(args: Vec<String>) -> ExitCode {
             }
         }
     };
-    let mut scope = scope_args(&selected);
-    scope.extend(passthrough);
-    match launch(&scope) {
-        Ok(status) => status,
+    if has_command_flags {
+        selected.commands = supplied_commands;
+    }
+
+    let config = match Config::native_session(
+        selected.roots,
+        selected.commands.into_iter().collect(),
+        network,
+    ) {
+        Ok(config) => Arc::new(config),
+        Err(error) => {
+            eprintln!("CONFIG_ERROR: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
+    if let Err(error) = config.doctor() {
+        eprintln!("DOCTOR_ERROR: {error}");
+        return ExitCode::FAILURE;
+    }
+    if let Err(error) = crate::sandbox::doctor() {
+        eprintln!("SANDBOX_ERROR: {error}");
+        return ExitCode::FAILURE;
+    }
+
+    match crate::tunnel::run(config).await {
+        Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
             ExitCode::FAILURE
@@ -325,16 +365,17 @@ mod tests {
     #[test]
     fn selection_builds_builtin_and_custom_scope() {
         let cwd = env::current_dir().unwrap();
-        let input = Cursor::new("\n3,4,5,7\nhttp\ncurl\nGET,HEAD\ny\nhello\nprintf\n*\nn\n");
+        let input = Cursor::new("3,4,5,7\nhttp\ncurl\nGET,HEAD\ny\nhello\nprintf\n*\nn\n");
         let mut input = input;
         let mut output = Vec::new();
-        let scope = collect_scope(&mut input, &mut output, &cwd, &[], true, false).unwrap();
+        let scope = collect_scope(&mut input, &mut output, &cwd, true, false).unwrap();
         let args = scope_args(&scope);
         assert!(args.iter().any(|arg| arg == "git=status"));
         assert!(args.iter().any(|arg| arg == "git=rev-parse"));
         assert!(args.iter().any(|arg| arg == "git=ls-files"));
         assert!(args.iter().any(|arg| arg == "cargo=check"));
         assert!(args.iter().any(|arg| arg == "cargo=metadata"));
+        assert!(args.iter().any(|arg| arg == "cargo=build"));
         assert!(args.iter().any(|arg| arg == "rg=rg"));
         assert!(args.iter().any(|arg| arg == "http=curl"));
         assert!(args.iter().any(|arg| arg == "http=GET"));

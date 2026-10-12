@@ -2,20 +2,20 @@
 //!
 //! This module applies command, path, environment, and timeout policy before a
 //! managed child starts. Arguments go directly to the configured executable.
-use crate::{config::Config, mcp::Fault};
+use crate::{
+    config::{CommandId, Config},
+    mcp::Fault,
+    sandbox,
+};
 use cap_std::fs::Dir;
 use serde::Deserialize;
 use serde_json::json;
-#[cfg(windows)]
-use std::os::windows::process::CommandExt;
 use std::{collections::BTreeMap, fs, io, path::Path, process::Stdio};
-#[cfg(unix)]
 use std::{os::fd::AsRawFd, os::unix::process::CommandExt};
 use tokio::process::{Child, Command};
-#[cfg(unix)]
 use tokio::time::Duration;
 
-#[derive(Clone, Deserialize, schemars::JsonSchema)]
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct CommandRequest {
     pub command: String,
@@ -91,16 +91,14 @@ pub fn admitted(
     config: &Config,
     request: &CommandRequest,
     default_timeout: u64,
-) -> Result<(Command, u64), Fault> {
-    let entry = config
-        .commands
-        .get(&request.command)
+) -> Result<(Command, u64, CommandId), Fault> {
+    let (command_id, entry) = config
+        .command(&request.command)
         .ok_or_else(|| Fault::new("COMMAND_NOT_FOUND", "command is not registered"))?;
-    if !entry.allow_any_args
-        && !entry
-            .allowed_subcommands
+    if let Some(allowed_subcommands) = &entry.allowed_subcommands
+        && !allowed_subcommands
             .iter()
-            .any(|s| request.args.first() == Some(s))
+            .any(|subcommand| request.args.first() == Some(subcommand))
     {
         return Err(Fault::with(
             "SUBCOMMAND_DENIED",
@@ -137,13 +135,37 @@ pub fn admitted(
         .map_err(|_| Fault::new("PATH_DENIED", "cwd is unavailable or escapes allowed roots"))?;
     let canonical_cwd = fs::canonicalize(&request.cwd)
         .map_err(|_| Fault::new("PATH_DENIED", "cwd cannot be checked"))?;
-    for argument in &request.args {
-        check_argument_path(config, &canonical_cwd, argument)?;
+    if !config.sandbox_commands {
+        for argument in &request.args {
+            check_argument_path(config, &canonical_cwd, argument)?;
+        }
     }
 
-    let mut command = std::process::Command::new(&entry.path);
+    let mut command = if config.sandbox_commands {
+        let workspace = config
+            .roots
+            .first()
+            .ok_or_else(|| Fault::new("SANDBOX_ERROR", "sandbox workspace is unavailable"))?;
+        sandbox::command(
+            &entry.path,
+            &request.args,
+            &workspace.path,
+            &canonical_cwd,
+            config.sandbox_network,
+        )
+        .map_err(|error| {
+            Fault::with(
+                "SANDBOX_ERROR",
+                "failed to prepare sandbox",
+                json!({"error": error}),
+            )
+        })?
+    } else {
+        let mut command = std::process::Command::new(&entry.path);
+        command.args(&request.args);
+        command
+    };
     command
-        .args(&request.args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
@@ -170,33 +192,24 @@ pub fn admitted(
         }
         command.env(name, value);
     }
-
-    #[cfg(unix)]
-    {
-        command.process_group(0);
-        unsafe {
-            command.pre_exec(move || {
-                if libc::fchdir(cwd.as_raw_fd()) == 0 {
-                    Ok(())
-                } else {
-                    Err(io::Error::last_os_error())
-                }
-            });
-        }
+    if config.sandbox_commands {
+        sandbox::apply_environment(&mut command, &config.roots[0].path);
     }
 
-    #[cfg(windows)]
-    {
-        drop(cwd);
-        const CREATE_NEW_PROCESS_GROUP: u32 = 0x0000_0200;
-        command.creation_flags(CREATE_NEW_PROCESS_GROUP);
-        command.current_dir(canonical_cwd);
+    command.process_group(0);
+    unsafe {
+        command.pre_exec(move || {
+            if libc::fchdir(cwd.as_raw_fd()) == 0 {
+                Ok(())
+            } else {
+                Err(io::Error::last_os_error())
+            }
+        });
     }
 
-    Ok((Command::from(command), timeout_ms))
+    Ok((Command::from(command), timeout_ms, command_id))
 }
 
-#[cfg(unix)]
 pub fn kill_group(pid: u32, signal: i32) -> io::Result<()> {
     let code = unsafe { libc::killpg(pid as i32, signal) };
     if code == 0 {
@@ -210,28 +223,43 @@ pub fn kill_group(pid: u32, signal: i32) -> io::Result<()> {
     }
 }
 
-#[cfg(unix)]
-pub async fn terminate(child: &mut Child, pid: u32) -> io::Result<()> {
+fn process_group_exists(pid: u32) -> io::Result<bool> {
+    let code = unsafe { libc::killpg(pid as i32, 0) };
+    if code == 0 {
+        return Ok(true);
+    }
+    let error = io::Error::last_os_error();
+    match error.raw_os_error() {
+        Some(libc::ESRCH) => Ok(false),
+        Some(libc::EPERM) => Ok(true),
+        _ => Err(error),
+    }
+}
+
+pub async fn terminate_group(pid: u32) -> io::Result<()> {
     kill_group(pid, libc::SIGTERM)?;
-    tokio::time::sleep(Duration::from_secs(1)).await;
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(1);
+
+    loop {
+        if !process_group_exists(pid)? {
+            return Ok(());
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(5)).await;
+    }
+
     if let Err(error) = kill_group(pid, libc::SIGKILL)
         && error.raw_os_error() != Some(libc::EPERM)
     {
         return Err(error);
     }
-    child.wait().await.map(|_| ())
+    Ok(())
 }
 
-#[cfg(windows)]
 pub async fn terminate(child: &mut Child, pid: u32) -> io::Result<()> {
-    let status = Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/T", "/F"])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
-        .await?;
-    if !status.success() && child.try_wait()?.is_none() {
-        return Err(io::Error::other("taskkill failed to stop the process tree"));
-    }
-    child.wait().await.map(|_| ())
+    terminate_group(pid).await?;
+    let _ = child.wait().await?;
+    Ok(())
 }

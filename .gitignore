@@ -1,5 +1,5 @@
 /target/
 /rivet.toml
-/tunnel-client-profiles/
+__pycache__/
+*.pyc
 .DS_Store
-/tunnel-client-runtime-*.zip

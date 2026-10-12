@@ -9,19 +9,13 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::{
     io::{Read, Seek, SeekFrom, Write},
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
     sync::atomic::{AtomicU64, Ordering},
 };
 
 static TEMP_ID: AtomicU64 = AtomicU64::new(1);
-#[cfg(windows)]
-const OPEN_REPARSE_POINT: u32 = 0x0020_0000;
-
 fn no_follow(options: &mut OpenOptions) {
-    #[cfg(unix)]
     options.custom_flags(libc::O_NOFOLLOW);
-    #[cfg(windows)]
-    options.custom_flags(OPEN_REPARSE_POINT);
 }
 
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -39,11 +33,19 @@ pub struct ReadRequest {
     pub limit: Option<usize>,
 }
 #[derive(Deserialize, schemars::JsonSchema)]
+#[serde(rename_all = "lowercase")]
+pub enum WriteMode {
+    Create,
+    Overwrite,
+    Append,
+}
+
+#[derive(Deserialize, schemars::JsonSchema)]
 #[serde(deny_unknown_fields)]
 pub struct WriteRequest {
     pub path: String,
     pub content: String,
-    pub mode: String,
+    pub mode: WriteMode,
     pub expected_sha256: Option<String>,
 }
 #[derive(Deserialize, schemars::JsonSchema)]
@@ -171,7 +173,7 @@ pub fn list(config: &Config, request: ListRequest) -> Result<Value, Fault> {
         })
         .map_err(|_| path_error("directory is unavailable or escapes allowed roots"))?;
     let mut entries = Vec::new();
-    let mut pending = vec![(dir, request.path, depth)];
+    let mut pending = vec![(dir, PathBuf::from(request.path), depth)];
     let mut truncated = false;
     while let Some((dir, prefix, left)) = pending.pop() {
         for entry in dir
@@ -186,14 +188,14 @@ pub fn list(config: &Config, request: ListRequest) -> Result<Value, Fault> {
             let kind = entry
                 .file_type()
                 .map_err(|e| io_error("failed to inspect entry", e))?;
-            let path = Path::new(&prefix).join(entry.file_name());
+            let path = prefix.join(entry.file_name());
             entries.push(json!({"path": path.to_string_lossy(), "type": if kind.is_dir() { "directory" } else if kind.is_symlink() { "symlink" } else { "file" }}));
             if left > 1 && kind.is_dir() {
                 pending.push((
                     entry
                         .open_dir()
                         .map_err(|e| io_error("failed to open child directory", e))?,
-                    path.to_string_lossy().into_owned(),
+                    path,
                     left - 1,
                 ));
             }
@@ -308,8 +310,8 @@ pub fn write(config: &Config, request: WriteRequest) -> Result<Value, Fault> {
     let (parent, name) = parent(config, &request.path)?;
     let mut current = current_file(&parent, &name)?;
     check_sha(current.as_mut(), request.expected_sha256.as_deref())?;
-    match request.mode.as_str() {
-        "create" => {
+    match request.mode {
+        WriteMode::Create => {
             if current.is_some() {
                 return Err(Fault::new("FILE_CHANGED", "target already exists"));
             }
@@ -322,7 +324,7 @@ pub fn write(config: &Config, request: WriteRequest) -> Result<Value, Fault> {
             file.write_all(request.content.as_bytes())
                 .map_err(|e| io_error("failed to write file", e))?;
         }
-        "overwrite" => {
+        WriteMode::Overwrite => {
             let perms = current
                 .as_ref()
                 .map(|file| file.metadata().map(|m| m.permissions()))
@@ -330,7 +332,7 @@ pub fn write(config: &Config, request: WriteRequest) -> Result<Value, Fault> {
                 .map_err(|e| io_error("failed to inspect permissions", e))?;
             atomic_install(&parent, &name, request.content.as_bytes(), perms)?;
         }
-        "append" => {
+        WriteMode::Append => {
             let mut opts = OpenOptions::new();
             opts.append(true).create(true);
             no_follow(&mut opts);
@@ -339,12 +341,6 @@ pub fn write(config: &Config, request: WriteRequest) -> Result<Value, Fault> {
                 .map_err(|e| io_error("failed to open append target", e))?;
             file.write_all(request.content.as_bytes())
                 .map_err(|e| io_error("failed to append file", e))?;
-        }
-        _ => {
-            return Err(Fault::new(
-                "INVALID_REQUEST",
-                "mode must be create, overwrite, or append",
-            ));
         }
     }
     Ok(json!({"bytes_written": request.content.len()}))

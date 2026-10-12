@@ -19,13 +19,13 @@ rivet_error() { printf '  %b✗%b %s\n' "$red" "$reset" "$1" >&2; }
 rivet_header
 
 if [[ "${1:-}" == '--help' || "${1:-}" == '-h' ]]; then
-  printf 'Usage: curl -fsSL https://raw.githubusercontent.com/%s/main/scripts/install.sh | bash -s -- [--help] [--root PATH] [--allow-command NAME=EXECUTABLE] [--allow-subcommand NAME=VALUE] [--allow-any-args NAME]\n' "$repo"
+  printf 'Usage: curl -fsSL https://raw.githubusercontent.com/%s/main/scripts/install.sh | bash -s -- [--help] [--allow-command NAME=EXECUTABLE] [--allow-subcommand NAME=VALUE] [--allow-any-args NAME]\n' "$repo"
   printf 'Downloads the latest verified Rivet release, installs it under %s, and starts one tunnel session.\n' "$install_root"
   exit 0
 fi
 
 if [[ ! -t 1 || ! -r /dev/tty ]]; then
-  printf 'Rivet setup needs an interactive terminal. Run this command in Terminal or PowerShell.\n' >&2
+  printf 'Rivet setup needs an interactive terminal.\n' >&2
   exit 1
 fi
 for tool in curl unzip awk tr uname mktemp mkdir rm; do
@@ -44,6 +44,10 @@ case "$(uname -s)" in
   Linux) os='linux' ;;
   *) printf 'Unsupported operating system: %s\n' "$(uname -s)" >&2; exit 1 ;;
 esac
+if [[ "$os" == 'linux' ]] && ! command -v bwrap >/dev/null 2>&1; then
+  rivet_error 'bubblewrap is required on Linux/WSL2 (install package: bubblewrap).'
+  exit 1
+fi
 case "$(uname -m)" in
   x86_64|amd64) arch='x64' ;;
   arm64|aarch64)
@@ -96,8 +100,8 @@ rivet_ok 'Release archive checksum verified'
 version_dir="$install_root/$tag-${actual:0:12}"
 mkdir -p "$version_dir"
 unzip -oq "$tmp_dir/$asset" -d "$version_dir"
-if [[ ! -x "$version_dir/bin/rivet" || ! -f "$version_dir/rivet.toml" ]]; then
-  rivet_error 'Release archive is missing the Rivet binary or configuration.'
+if [[ ! -x "$version_dir/bin/rivet" ]]; then
+  rivet_error 'Release archive is missing the Rivet binary.'
   exit 1
 fi
 rivet_ok "Installed in $version_dir"

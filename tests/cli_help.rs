@@ -24,12 +24,18 @@ fn help_does_not_load_the_default_config() {
         vec!["config-check", "--help"],
     ] {
         let output = Command::new(env!("CARGO_BIN_EXE_rivet"))
-            .args(args)
+            .args(&args)
             .current_dir(&directory)
             .output()
             .unwrap();
         assert!(output.status.success());
-        assert!(String::from_utf8_lossy(&output.stdout).contains("Usage: rivet"));
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        assert!(stdout.contains("Usage: rivet"));
+        if args.first() == Some(&"session") {
+            assert!(stdout.contains("CONTROL_PLANE_TUNNEL_ID"));
+            assert!(stdout.contains("CONTROL_PLANE_API_KEY"));
+            assert!(stdout.contains("terminal echo disabled"));
+        }
     }
 
     fs::remove_dir_all(directory).unwrap();

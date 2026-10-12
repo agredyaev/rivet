@@ -43,10 +43,39 @@ def call(proc, number, name, arguments, error=None):
     return result["structuredContent"]
 
 
+_wait_call_id = 900000
+
+def process_row(snapshot, process_id):
+    for row in snapshot["running"]:
+        if row["process_id"] == process_id:
+            return "running", row
+    for row in snapshot["completed"]:
+        if row["process_id"] == process_id:
+            return "completed", row
+    raise AssertionError(f"process {process_id} missing from snapshot: {snapshot}")
+
 def run_to_completion(proc, number, arguments):
-    completed = call(proc, number, "run_command", arguments)
-    assert completed["state"] == "completed", completed
-    return completed
+    global _wait_call_id
+    submitted = call(proc, number, "run_command", arguments)
+    process_id = submitted["process_id"]
+    for _ in range(120):
+        _wait_call_id += 1
+        snapshot = call(proc, _wait_call_id, "list_processes", {})
+        state, row = process_row(snapshot, process_id)
+        if state == "completed":
+            _wait_call_id += 1
+            output = call(proc, _wait_call_id, "read_process_output", {"process_id": process_id, "limit": 64})
+            return {
+                "process_id": process_id,
+                "exit_code": row["exit_code"],
+                "timed_out": row["timed_out"],
+                "stopped": row["stopped"],
+                "stdout": output["stdout"]["text"],
+                "stderr": output["stderr"]["text"],
+                "truncated": output["stdout"]["truncated"] or output["stderr"]["truncated"],
+            }
+        time.sleep(.05)
+    raise AssertionError("submitted run_command did not complete")
 
 
 def assert_server_info(result):
@@ -57,6 +86,12 @@ def assert_server_info(result):
         "description": "Local MCP server for configured commands and allowed filesystem roots.",
         "websiteUrl": "https://github.com/agredyaev/rivet",
     }, result
+    instructions = result["instructions"]
+    assert "Batch independent operations." in instructions
+    assert "Submit long-running commands asynchronously" in instructions
+    assert "Use list_processes for process state" in instructions
+    assert "read_process_output only when captured output is required" in instructions
+    assert "bounded phases" in instructions
 
 
 def main():
@@ -121,7 +156,7 @@ allow_override = ["RIVET_TEST"]
             proc.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
             proc.stdin.flush()
             tools = send(proc, 2, "tools/list", {})["tools"]
-            assert {tool["name"] for tool in tools} == {"list_roots", "list_commands", "run_command", "start_process", "list_processes", "list_ready_processes", "read_process_output", "send_process_input", "stop_process", "list_directory", "read_file", "write_file", "replace_text"}
+            assert {tool["name"] for tool in tools} == {"list_roots", "list_commands", "run_command", "run_commands", "start_process", "list_processes", "read_process_output", "send_process_input", "stop_process", "list_directory", "read_file", "read_files", "write_file", "replace_text"}
             assert all(tool["inputSchema"]["type"] == "object" for tool in tools)
             assert call(proc, 102, "list_roots", {})["roots"] == [str(root.resolve())]
             names = call(proc, 3, "list_commands", {})["commands"]
@@ -175,28 +210,33 @@ allow_override = ["RIVET_TEST"]
             output = run_to_completion(proc, 22, {"command": "sh", "args": ["-c", "printf '%0100d' 0; printf '%0100d' 0 >&2"], "cwd": tmp})
             assert output["truncated"] and len(output["stdout"]) == len(output["stderr"]) == 64
             assert run_to_completion(proc, 220, {"command": "sh", "args": ["-c", "exit 7"], "cwd": tmp})["exit_code"] == 7
-            timeout = call(proc, 23, "run_command", {"command": "sh", "args": ["-c", "echo ready; sleep 3"], "cwd": tmp, "timeout_ms": 50}, "COMMAND_TIMEOUT")
-            assert timeout["details"]["timed_out"] and "ready" in timeout["details"]["stdout"]
-            call(proc, 231, "run_command", {"command": "sh", "args": ["-c", "sleep 3 &"], "cwd": tmp, "timeout_ms": 50}, "COMMAND_TIMEOUT")
+            timeout = run_to_completion(proc, 23, {"command": "sh", "args": ["-c", "echo ready; sleep 3"], "cwd": tmp, "timeout_ms": 50})
+            assert timeout["timed_out"] and "ready" in timeout["stdout"]
+            assert run_to_completion(proc, 231, {"command": "sh", "args": ["-c", "sleep 3 &"], "cwd": tmp, "timeout_ms": 50})["timed_out"]
             detached_id = call(proc, 232, "start_process", {"command": "sh", "args": ["-c", "sleep .4; printf detached"], "cwd": tmp, "timeout_ms": 1000})["process_id"]
-            listed = call(proc, 233, "list_processes", {})["processes"]
-            assert any(row["process_id"] == detached_id and row["command"] == "sh" for row in listed)
+            snapshot = call(proc, 233, "list_processes", {})
+            state, row = process_row(snapshot, detached_id)
+            assert row["command"] == "sh"
             for _ in range(30):
-                read = call(proc, 234, "read_process_output", {"process_id": detached_id, "limit": 64})
-                if not read["status"]["running"]: break
+                snapshot = call(proc, 234, "list_processes", {})
+                state, row = process_row(snapshot, detached_id)
+                if state == "completed": break
                 time.sleep(.05)
-            else: raise AssertionError("detached run_command did not complete")
-            assert read["stdout"]["text"] == "detached"
-            ready = call(proc, 235, "list_ready_processes", {"after_sequence": 0, "limit": 2, "output_limit": 64})
-            assert ready["processes"], ready
-            detached_ready = next(row for row in ready["processes"] if row["process_id"] == detached_id)
-            assert detached_ready["stdout"] == "detached" and detached_ready["stderr"] == ""
-            call(proc, 2351, "list_ready_processes", {"after_sequence": 0, "limit": 2, "output_limit": 65}, "INVALID_REQUEST")
-            replay = call(proc, 236, "list_ready_processes", {"after_sequence": 0, "limit": 2})
-            assert [row["completion_sequence"] for row in replay["processes"]] == [row["completion_sequence"] for row in ready["processes"]]
-            cursor = ready["processes"][-1]["completion_sequence"]
-            after_cursor = call(proc, 237, "list_ready_processes", {"after_sequence": cursor, "limit": 2})
-            assert all(row["completion_sequence"] > cursor for row in after_cursor["processes"])
+            else: raise AssertionError("detached process did not complete")
+            detached_output = call(proc, 235, "read_process_output", {"process_id": detached_id, "limit": 64})
+            assert detached_output["stdout"]["text"] == "detached"
+            assert detached_output["stderr"]["text"] == ""
+
+            waited_id = call(proc, 238, "start_process", {"command": "sh", "args": ["-c", "sleep .2; printf waited"], "cwd": tmp, "timeout_ms": 1000})["process_id"]
+            for _ in range(30):
+                snapshot = call(proc, 239, "list_processes", {})
+                state, row = process_row(snapshot, waited_id)
+                if state == "completed": break
+                time.sleep(.05)
+            else: raise AssertionError("waited process did not complete")
+            waited_output = call(proc, 240, "read_process_output", {"process_id": waited_id, "limit": 64})
+            assert waited_output["stdout"]["text"] == "waited"
+
             started = call(proc, 24, "start_process", {"command": "cat", "args": [], "cwd": tmp})["process_id"]
             call(proc, 25, "send_process_input", {"process_id": started, "text": "hello\n"})
             for _ in range(20):
@@ -204,39 +244,64 @@ allow_override = ["RIVET_TEST"]
                 if "hello" in read["stdout"]["text"]: break
                 time.sleep(.05)
             else: raise AssertionError("process output missing")
+            assert read["state"] == "running"
             assert read["stdout"]["next_offset"] == 6
+
             second = call(proc, 27, "start_process", {"command": "cat", "args": [], "cwd": tmp})["process_id"]
-            lost = call(proc, 270, "list_ready_processes", {"after_sequence": 0, "limit": 2})
-            assert lost["gap"] and not lost["processes"] and lost["latest_sequence"] > 0, lost
+            snapshot = call(proc, 270, "list_processes", {})
+            assert {row["process_id"] for row in snapshot["running"]} == {started, second}
             call(proc, 271, "run_command", {"command": "echo", "args": ["full"], "cwd": tmp}, "PROCESS_LIMIT")
             call(proc, 272, "run_command", {"command": "sh", "args": ["-c", "sleep 2"], "cwd": tmp, "timeout_ms": 1000}, "PROCESS_LIMIT")
             call(proc, 28, "start_process", {"command": "cat", "args": [], "cwd": tmp}, "PROCESS_LIMIT")
+
             assert call(proc, 29, "stop_process", {"process_id": started})["status"]["stopped"]
             call(proc, 30, "stop_process", {"process_id": second})
+
             third = call(proc, 31, "start_process", {"command": "echo", "args": ["done"], "cwd": tmp})["process_id"]
             for _ in range(20):
-                read = call(proc, 32, "read_process_output", {"process_id": third, "limit": 64})
-                if not read["status"]["running"]: break
+                snapshot = call(proc, 32, "list_processes", {})
+                state, row = process_row(snapshot, third)
+                if state == "completed": break
                 time.sleep(.05)
             else: raise AssertionError("normal exit missing")
-            assert read["status"]["exit_code"] == 0
-            assert read["stdout"]["text"] == "done\n"
-            listed = call(proc, 33, "list_processes", {})["processes"]
-            assert len(listed) <= 2
+            assert row["exit_code"] == 0
+            read = call(proc, 321, "read_process_output", {"process_id": third, "limit": 64})
+            assert read["state"] == "completed" and read["stdout"]["text"] == "done\n"
+            snapshot = call(proc, 33, "list_processes", {})
+            assert len(snapshot["running"]) + len(snapshot["completed"]) <= 32
+
+            retained = []
+            for i in range(35):
+                retained.append(
+                    run_to_completion(
+                        proc,
+                        5000 + i,
+                        {"command": "echo", "args": [str(i)], "cwd": tmp},
+                    )["process_id"]
+                )
+            snapshot = call(proc, 5036, "list_processes", {})
+            assert not snapshot["running"]
+            assert [row["process_id"] for row in snapshot["completed"]] == retained[-32:]
+            call(proc, 5037, "read_process_output", {"process_id": retained[0]}, "PROCESS_NOT_FOUND")
+
             timed = call(proc, 34, "start_process", {"command": "sh", "args": ["-c", "sleep 3"], "cwd": tmp, "timeout_ms": 50})["process_id"]
             for _ in range(40):
-                read = call(proc, 35, "read_process_output", {"process_id": timed, "limit": 64})
-                if not read["status"]["running"]: break
+                snapshot = call(proc, 35, "list_processes", {})
+                state, row = process_row(snapshot, timed)
+                if state == "completed": break
                 time.sleep(.05)
             else: raise AssertionError("managed timeout missing")
-            assert read["status"]["timed_out"]
+            assert row["timed_out"]
+
             truncated_id = call(proc, 350, "start_process", {"command": "sh", "args": ["-c", "printf '%0100d' 0"], "cwd": tmp})["process_id"]
             for _ in range(20):
-                read = call(proc, 351, "read_process_output", {"process_id": truncated_id, "limit": 64})
-                if not read["status"]["running"]: break
+                snapshot = call(proc, 351, "list_processes", {})
+                state, _ = process_row(snapshot, truncated_id)
+                if state == "completed": break
                 time.sleep(.05)
+            read = call(proc, 352, "read_process_output", {"process_id": truncated_id, "limit": 64})
             assert read["stdout"]["truncated"] and read["stdout"]["next_offset"] == 64
-            tail = call(proc, 352, "read_process_output", {"process_id": truncated_id, "stdout_offset": 64, "limit": 64})
+            tail = call(proc, 353, "read_process_output", {"process_id": truncated_id, "stdout_offset": 64, "limit": 64})
             assert tail["stdout"]["text"] == "" and tail["stdout"]["next_offset"] == 100
             marker = root / "orphaned"
             script = f"(sleep 2; echo orphan > {marker}) & wait"

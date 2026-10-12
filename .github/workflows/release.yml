@@ -43,20 +43,14 @@ jobs:
             sha="$(jq -r '.object.sha' <<< "$tag_json")"
           fi
 
-          commit="$(gh api "repos/$GH_REPO/commits/$sha")"
-          source_sha="$(jq -r '.parents[1].sha // empty' <<< "$commit")"
-          if [[ -z "$source_sha" ]]; then
-            source_sha="$sha"
-          fi
-
-          release_tree="$(gh api "repos/$GH_REPO/git/commits/$sha" --jq .tree.sha)"
-          source_tree="$(gh api "repos/$GH_REPO/git/commits/$source_sha" --jq .tree.sha)"
-          if [[ "$release_tree" != "$source_tree" ]]; then
-            echo "::error::Tested source tree $source_tree does not match release tree $release_tree."
+          cargo_toml="$(gh api "repos/$GH_REPO/contents/Cargo.toml?ref=$sha" --jq .content | tr -d '\n' | base64 --decode)"
+          version="$(sed -n 's/^version = "\([^"]*\)"/\1/p' <<< "$cargo_toml" | head -n1)"
+          if [[ -z "$version" || "$TAG" != "v$version" ]]; then
+            echo "::error::Release tag $TAG does not match Cargo.toml version $version."
             exit 1
           fi
 
-          runs="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$source_sha&per_page=20")"
+          runs="$(gh api "repos/$GH_REPO/actions/workflows/ci.yml/runs?head_sha=$sha&per_page=20")"
           run_id="$(jq -r '
             .workflow_runs
             | map(select(.status == "completed" and .conclusion == "success"))
@@ -66,7 +60,7 @@ jobs:
           ' <<< "$runs")"
 
           if [[ -z "$run_id" ]]; then
-            echo "::error::No successful CI run found for tested source commit $source_sha."
+            echo "::error::No successful CI run found for release commit $sha."
             exit 1
           fi
 
@@ -77,9 +71,8 @@ jobs:
           fi
 
           echo "sha=$sha" >> "$GITHUB_OUTPUT"
-          echo "source_sha=$source_sha" >> "$GITHUB_OUTPUT"
           echo "run_id=$run_id" >> "$GITHUB_OUTPUT"
-          echo "Using tested CI run $run_id for $source_sha (release $sha)"
+          echo "Using tested CI run $run_id for release commit $sha"
 
       - name: Download tested release assets
         env:
@@ -103,20 +96,29 @@ jobs:
             rivet-linux-x64.zip
             rivet-linux-aarch64.zip
             rivet-darwin-arm64.zip
-            rivet-windows-x64.zip
             SHA256SUMS
           )
           for asset in "${expected[@]}"; do
             test -f "dist/$asset"
           done
 
+          expected_list="$(printf '%s\n' "${expected[@]}" | sort)"
+          actual_list="$(find dist -maxdepth 1 -type f -exec basename {} \; | sort)"
+          if [[ "$actual_list" != "$expected_list" ]]; then
+            echo "::error::Unexpected release artifact set."
+            printf 'Expected:\n%s\nActual:\n%s\n' "$expected_list" "$actual_list"
+            exit 1
+          fi
+
           (cd dist && sha256sum -c SHA256SUMS)
           gh release upload "$TAG" dist/rivet-*.zip dist/SHA256SUMS --clobber
 
-          release_assets="$(gh release view "$TAG" --json assets --jq '.assets[].name')"
-          for asset in "${expected[@]}"; do
-            grep -Fxq "$asset" <<< "$release_assets"
-          done
+          release_assets="$(gh release view "$TAG" --json assets --jq '.assets[].name' | sort)"
+          if [[ "$release_assets" != "$expected_list" ]]; then
+            echo "::error::Published release asset set does not match the supported platform set."
+            printf 'Expected:\n%s\nActual:\n%s\n' "$expected_list" "$release_assets"
+            exit 1
+          fi
 
           latest="$(gh api "repos/$GH_REPO/releases/latest" --jq .tag_name)"
           if [[ "$latest" != "$TAG" ]]; then
