@@ -144,7 +144,13 @@ fn check_sha(
         }
         hash.update(&chunk[..count]);
     }
-    if format!("{:x}", hash.finalize()) != expected.to_ascii_lowercase() {
+    if hash
+        .finalize()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>()
+        != expected.to_ascii_lowercase()
+    {
         return Err(Fault::new(
             "FILE_CHANGED",
             "target hash does not match expected_sha256",

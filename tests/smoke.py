@@ -94,63 +94,52 @@ def assert_server_info(result):
     assert "bounded phases" in instructions
 
 
+OUTPUT_CAP = 2 * 1024 * 1024
+FILE_CAP = 4 * 1024 * 1024
+RUNNING_CAP = 8
+
+
 def main():
     binary = Path(sys.argv[1]).resolve()
     with tempfile.TemporaryDirectory() as tmp:
         root = Path(tmp)
-        config = root / "rivet.toml"
-        config.write_text('''[limits]
-max_stdout_bytes = 64
-max_stderr_bytes = 64
-max_file_read_bytes = 1024
-max_directory_entries = 4
-max_running_processes = 2
-default_timeout_ms = 1000
-max_timeout_ms = 5000
-[environment]
-pass = ["PATH"]
-allow_override = ["RIVET_TEST"]
-''')
         scope = ["--root", tmp,
                  "--allow-command", "echo=/bin/echo", "--allow-any-args", "echo",
                  "--allow-command", "cat=/bin/cat", "--allow-any-args", "cat",
                  "--allow-command", "sh=/bin/sh", "--allow-subcommand", "sh=-c",
                  "--allow-command", "env=/usr/bin/env", "--allow-any-args", "env"]
-        for action in ("config-check", "doctor", "commands"):
-            assert subprocess.run([binary, action, "--config", config, *scope], capture_output=True).returncode == 0
-        invalid = root / "invalid.toml"
-        invalid.write_text(config.read_text() + "unknown = true\n")
-        assert subprocess.run([binary, "config-check", "--config", invalid, *scope], capture_output=True).returncode != 0
-        assert subprocess.run([binary, "config-check", "--config", config, "--root", tmp], capture_output=True).returncode == 0
-        assert subprocess.run([binary, "config-check", "--config", config, "--root", tmp,
+        for action in ("doctor", "commands"):
+            assert subprocess.run([binary, action, *scope], capture_output=True).returncode == 0
+        assert subprocess.run([binary, "doctor", "--root", tmp], capture_output=True).returncode == 0
+        assert subprocess.run([binary, "doctor", "--root", tmp,
                               "--allow-command", "missing=/missing-rivet-executable",
                               "--allow-any-args", "missing"], capture_output=True).returncode != 0
-        assert subprocess.run([binary, "config-check", "--config", config, "--root", tmp,
+        assert subprocess.run([binary, "doctor", "--root", tmp,
                               "--allow-command", "echo=/bin/echo", "--allow-any-args", "echo",
                               "--allow-subcommand", "echo=x"], capture_output=True).returncode != 0
-        portable = root / "portable.toml"
-        portable.write_text(config.read_text())
         workspace = root / "workspace"
         other_root = root / "other"
         workspace.mkdir()
         other_root.mkdir()
         (workspace / "one.txt").write_text("one")
         (other_root / "two.txt").write_text("two")
-        assert subprocess.run([binary, "config-check", "--config", portable], capture_output=True).returncode != 0
+        assert subprocess.run([binary, "doctor"], capture_output=True).returncode != 0
         roots_and_commands = ["--root", ".", "--root", str(other_root), *scope[2:]]
-        assert subprocess.run([binary, "config-check", "--config", portable, *roots_and_commands], cwd=workspace, capture_output=True).returncode == 0
-        scoped = subprocess.Popen([binary, "serve", "--config", portable, *roots_and_commands], cwd=workspace, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        assert subprocess.run([binary, "doctor", *roots_and_commands], cwd=workspace, capture_output=True).returncode == 0
+        scoped = subprocess.Popen([binary, "serve", *roots_and_commands], cwd=workspace, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             assert_server_info(send(scoped, 1, "initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "smoke", "version": "1"}}))
             assert set(call(scoped, 101, "list_roots", {})["roots"]) == {str(workspace.resolve()), str(other_root.resolve())}
             assert call(scoped, 2, "read_file", {"path": str(workspace.resolve() / "one.txt")})["text"] == "one"
             assert call(scoped, 3, "read_file", {"path": str(other_root / "two.txt")})["text"] == "two"
-            call(scoped, 4, "read_file", {"path": str(config)}, "PATH_DENIED")
+            call(scoped, 4, "read_file", {"path": str(root / "outside.txt")}, "PATH_DENIED")
             call(scoped, 5, "run_command", {"command": "echo", "args": ["ok"], "cwd": tmp}, "PATH_DENIED")
         finally:
             scoped.stdin.close()
             assert scoped.wait(timeout=10) == 0
-        proc = subprocess.Popen([binary, "serve", "--config", config, *scope], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        (root / "rivet.toml").write_text("invalid TOML\n")
+        server_env = {**os.environ, "HOME": "rivet-test-home", "RIVET_TEST_SECRET": "must-not-leak"}
+        proc = subprocess.Popen([binary, "serve", *scope], cwd=root, env=server_env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         try:
             assert_server_info(send(proc, 1, "initialize", {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "smoke", "version": "1"}}))
             proc.stdin.write(b'{"jsonrpc":"2.0","method":"notifications/initialized"}\n')
@@ -168,8 +157,12 @@ allow_override = ["RIVET_TEST"]
             call(proc, 6, "run_command", {**base, "command": "sh", "args": ["-x"]}, "SUBCOMMAND_DENIED")
             call(proc, 7, "run_command", {**base, "cwd": "/"}, "PATH_DENIED")
             call(proc, 8, "run_command", {**base, "env": {"SECRET": "x"}}, "COMMAND_DENIED")
-            env = run_to_completion(proc, 9, {**base, "command": "sh", "args": ["-c", "printf '%s' \"$RIVET_TEST\""], "env": {"RIVET_TEST": "yes"}})
+            env = run_to_completion(proc, 9, {**base, "command": "sh", "args": ["-c", "printf '%s' \"$RUST_LOG\""], "env": {"RUST_LOG": "yes"}})
             assert env["stdout"] == "yes"
+            inherited = run_to_completion(proc, 91, {**base, "command": "sh", "args": ["-c", "printf '%s|%s' \"$HOME\" \"$RIVET_TEST_SECRET\""]})
+            assert inherited["stdout"] == "rivet-test-home|"
+            for timeout_ms in (0, 1_800_001):
+                call(proc, 92, "run_command", {**base, "timeout_ms": timeout_ms}, "INVALID_REQUEST")
             path = root / "file.txt"
             call(proc, 10, "write_file", {"path": str(path), "content": "héllo", "mode": "create"})
             assert call(proc, 11, "read_file", {"path": str(path), "offset": 0, "limit": 2})["text"] == "h"
@@ -184,13 +177,13 @@ allow_override = ["RIVET_TEST"]
             assert path.read_text() == "Hllo!"
             call(proc, 17, "write_file", {"path": str(path), "content": "x", "mode": "create"}, "FILE_CHANGED")
             call(proc, 170, "write_file", {"path": str(path), "content": "x", "mode": "append", "expected_sha256": "bad"}, "INVALID_REQUEST")
-            call(proc, 171, "read_file", {"path": str(path), "limit": 2048}, "INVALID_REQUEST")
+            call(proc, 171, "read_file", {"path": str(path), "limit": FILE_CAP + 1}, "INVALID_REQUEST")
             call(proc, 172, "replace_text", {"path": str(path), "old": "", "new": "x", "expected_occurrences": 1}, "INVALID_REQUEST")
             assert path.read_text() == "Hllo!"
             large = root / "large.txt"
-            large.write_text("a" * 1000)
-            call(proc, 173, "replace_text", {"path": str(large), "old": "a", "new": "abcdefghij", "expected_occurrences": 1000}, "OUTPUT_LIMIT")
-            assert large.read_text() == "a" * 1000
+            large.write_text("a" * (FILE_CAP // 2))
+            call(proc, 173, "replace_text", {"path": str(large), "old": "a", "new": "abc", "expected_occurrences": FILE_CAP // 2}, "OUTPUT_LIMIT")
+            assert large.read_text() == "a" * (FILE_CAP // 2)
             outside = root.parent / (root.name + "-outside")
             call(proc, 18, "read_file", {"path": str(outside)}, "PATH_DENIED")
             call(proc, 180, "read_file", {"path": str(root / ".." / "outside")}, "PATH_DENIED")
@@ -207,7 +200,7 @@ allow_override = ["RIVET_TEST"]
             assert run_to_completion(proc, 202, {"command": "echo", "args": [str(inside_link)], "cwd": tmp})["exit_code"] == 0
             for i in range(5): (root / f"item{i}").touch()
             assert call(proc, 21, "list_directory", {"path": tmp, "max_entries": 4})["truncated"]
-            output = run_to_completion(proc, 22, {"command": "sh", "args": ["-c", "printf '%0100d' 0; printf '%0100d' 0 >&2"], "cwd": tmp})
+            output = run_to_completion(proc, 22, {"command": "sh", "args": ["-c", f"printf '%0{OUTPUT_CAP + 1}d' 0; printf '%0{OUTPUT_CAP + 1}d' 0 >&2"], "cwd": tmp})
             assert output["truncated"] and len(output["stdout"]) == len(output["stderr"]) == 64
             assert run_to_completion(proc, 220, {"command": "sh", "args": ["-c", "exit 7"], "cwd": tmp})["exit_code"] == 7
             timeout = run_to_completion(proc, 23, {"command": "sh", "args": ["-c", "echo ready; sleep 3"], "cwd": tmp, "timeout_ms": 50})
@@ -247,15 +240,17 @@ allow_override = ["RIVET_TEST"]
             assert read["state"] == "running"
             assert read["stdout"]["next_offset"] == 6
 
-            second = call(proc, 27, "start_process", {"command": "cat", "args": [], "cwd": tmp})["process_id"]
+            running = [started]
+            for _ in range(RUNNING_CAP - 1):
+                running.append(call(proc, 27, "start_process", {"command": "cat", "args": [], "cwd": tmp})["process_id"])
             snapshot = call(proc, 270, "list_processes", {})
-            assert {row["process_id"] for row in snapshot["running"]} == {started, second}
+            assert {row["process_id"] for row in snapshot["running"]} == set(running)
             call(proc, 271, "run_command", {"command": "echo", "args": ["full"], "cwd": tmp}, "PROCESS_LIMIT")
             call(proc, 272, "run_command", {"command": "sh", "args": ["-c", "sleep 2"], "cwd": tmp, "timeout_ms": 1000}, "PROCESS_LIMIT")
             call(proc, 28, "start_process", {"command": "cat", "args": [], "cwd": tmp}, "PROCESS_LIMIT")
 
-            assert call(proc, 29, "stop_process", {"process_id": started})["status"]["stopped"]
-            call(proc, 30, "stop_process", {"process_id": second})
+            for process_id in running:
+                assert call(proc, 29, "stop_process", {"process_id": process_id})["status"]["stopped"]
 
             third = call(proc, 31, "start_process", {"command": "echo", "args": ["done"], "cwd": tmp})["process_id"]
             for _ in range(20):
@@ -293,7 +288,7 @@ allow_override = ["RIVET_TEST"]
             else: raise AssertionError("managed timeout missing")
             assert row["timed_out"]
 
-            truncated_id = call(proc, 350, "start_process", {"command": "sh", "args": ["-c", "printf '%0100d' 0"], "cwd": tmp})["process_id"]
+            truncated_id = call(proc, 350, "start_process", {"command": "sh", "args": ["-c", f"printf '%0{OUTPUT_CAP + 1}d' 0"], "cwd": tmp})["process_id"]
             for _ in range(20):
                 snapshot = call(proc, 351, "list_processes", {})
                 state, _ = process_row(snapshot, truncated_id)
@@ -301,8 +296,10 @@ allow_override = ["RIVET_TEST"]
                 time.sleep(.05)
             read = call(proc, 352, "read_process_output", {"process_id": truncated_id, "limit": 64})
             assert read["stdout"]["truncated"] and read["stdout"]["next_offset"] == 64
-            tail = call(proc, 353, "read_process_output", {"process_id": truncated_id, "stdout_offset": 64, "limit": 64})
-            assert tail["stdout"]["text"] == "" and tail["stdout"]["next_offset"] == 100
+            tail = call(proc, 353, "read_process_output", {"process_id": truncated_id, "stdout_offset": OUTPUT_CAP, "limit": 64})
+            assert tail["stdout"]["text"] == "" and tail["stdout"]["next_offset"] == OUTPUT_CAP + 1
+            assert read["stdout"]["total_bytes"] == OUTPUT_CAP + 1
+            call(proc, 354, "read_process_output", {"process_id": truncated_id, "limit": OUTPUT_CAP + 1}, "INVALID_REQUEST")
             marker = root / "orphaned"
             script = f"(sleep 2; echo orphan > {marker}) & wait"
             group = call(proc, 36, "start_process", {"command": "sh", "args": ["-c", script], "cwd": tmp})["process_id"]
@@ -321,7 +318,7 @@ allow_override = ["RIVET_TEST"]
         assert not shutdown_marker.exists(), "server shutdown left a child process running"
         assert not proc.stdout.read(), "unexpected stdout"
         # An unterminated oversized line must close the transport without waiting for a newline.
-        oversized = subprocess.Popen([binary, "serve", "--config", config, *scope], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        oversized = subprocess.Popen([binary, "serve", *scope], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         oversized.stdin.write(b"x" * (1024 * 1024 + 1024 * 6 + 2))
         oversized.stdin.flush()
         oversized.stdin.close()

@@ -1,9 +1,8 @@
-//! TOML loading and startup validation.
+//! Embedded defaults and startup scope validation.
 //!
 //! Executables are resolved once, and allowed roots are kept open as directory
 //! capabilities so filesystem operations can remain relative to those roots.
 use cap_std::{ambient_authority, fs::Dir};
-use serde::Deserialize;
 use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::BTreeMap,
@@ -14,15 +13,6 @@ use std::{
 pub const PROCESS_RETENTION_SLOTS: usize = 32;
 pub const MAX_RUNNING_PROCESSES: usize = 10;
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
-pub struct ConfigFile {
-    pub limits: Limits,
-    pub environment: Environment,
-}
-
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
 pub struct Limits {
     pub max_stdout_bytes: usize,
     pub max_stderr_bytes: usize,
@@ -33,8 +23,20 @@ pub struct Limits {
     pub max_timeout_ms: u64,
 }
 
-#[derive(Deserialize)]
-#[serde(deny_unknown_fields)]
+impl Default for Limits {
+    fn default() -> Self {
+        Self {
+            max_stdout_bytes: 2 * 1024 * 1024,
+            max_stderr_bytes: 2 * 1024 * 1024,
+            max_file_read_bytes: 4 * 1024 * 1024,
+            max_directory_entries: 1000,
+            max_running_processes: 8,
+            default_timeout_ms: 120_000,
+            max_timeout_ms: 1_800_000,
+        }
+    }
+}
+
 pub struct Environment {
     pub pass: Vec<String>,
     pub allow_override: Vec<String>,
@@ -77,7 +79,7 @@ fn env_name(s: &str) -> bool {
     !s.is_empty() && !s.contains(['=', '\0'])
 }
 
-fn executable(input: &str) -> Result<PathBuf, String> {
+pub(crate) fn executable(input: &str) -> Result<PathBuf, String> {
     if input.is_empty() || input.contains('\0') {
         return Err("invalid executable".into());
     }
@@ -155,16 +157,16 @@ fn executable_file(metadata: &fs::Metadata) -> bool {
 }
 
 impl Config {
-    pub fn load(
-        path: &Path,
+    pub fn new(
         cli_roots: Vec<PathBuf>,
         command_specs: BTreeMap<String, CommandConfig>,
     ) -> Result<Self, String> {
-        let source = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
-        let file: ConfigFile = toml::from_str(&source).map_err(|e| e.to_string())?;
         Self::build(
-            file.limits,
-            file.environment,
+            Limits::default(),
+            Environment {
+                pass: vec!["PATH".into(), "HOME".into(), "TMPDIR".into(), "LANG".into()],
+                allow_override: vec!["RUST_LOG".into()],
+            },
             cli_roots,
             command_specs,
             false,
@@ -178,15 +180,7 @@ impl Config {
         sandbox_network: bool,
     ) -> Result<Self, String> {
         Self::build(
-            Limits {
-                max_stdout_bytes: 2 * 1024 * 1024,
-                max_stderr_bytes: 2 * 1024 * 1024,
-                max_file_read_bytes: 4 * 1024 * 1024,
-                max_directory_entries: 1000,
-                max_running_processes: 8,
-                default_timeout_ms: 120_000,
-                max_timeout_ms: 1_800_000,
-            },
+            Limits::default(),
             Environment {
                 pass: vec!["PATH".into(), "LANG".into()],
                 allow_override: vec!["RUST_LOG".into()],

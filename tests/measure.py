@@ -19,27 +19,14 @@ def main():
         parser.error("--calls must be positive")
     binary = args.binary.resolve()
     with tempfile.TemporaryDirectory() as tmp:
-        config = Path(tmp) / "rivet.toml"
         small_file = Path(tmp) / "small.txt"
         small_file.write_text("x" * 1024)
-        config.write_text('''[limits]
-max_stdout_bytes = 2097152
-max_stderr_bytes = 2097152
-max_file_read_bytes = 4194304
-max_directory_entries = 1000
-max_running_processes = 8
-default_timeout_ms = 120000
-max_timeout_ms = 1800000
-[environment]
-pass = ["PATH"]
-allow_override = []
-''')
         scope = ["--root", tmp, "--allow-command", "echo=/bin/echo", "--allow-any-args", "echo"]
         request = (json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {"protocolVersion": "2025-11-25", "capabilities": {}, "clientInfo": {"name": "measure", "version": "1"}}}) + "\n").encode()
         samples = []
         for _ in range(21):
             start = time.perf_counter_ns()
-            proc = subprocess.Popen([binary, "serve", "--config", config, *scope], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            proc = subprocess.Popen([binary, "serve", *scope], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             proc.stdin.write(request)
             proc.stdin.flush()
             response = json.loads(proc.stdout.readline())
@@ -47,7 +34,7 @@ allow_override = []
             samples.append((time.perf_counter_ns() - start) / 1_000_000)
             proc.stdin.close()
             assert proc.wait(timeout=10) == 0
-        proc = subprocess.Popen([binary, "serve", "--config", config, *scope], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc = subprocess.Popen([binary, "serve", *scope], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
         proc.stdin.write(request)
         proc.stdin.flush()
         assert json.loads(proc.stdout.readline())["id"] == 1

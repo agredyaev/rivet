@@ -1,6 +1,6 @@
 //! Rivet's executable entry point.
 //!
-//! Startup loads and validates configuration before dispatching to the CLI
+//! Startup validates roots and command permissions before dispatching to the CLI
 //! command or starting the MCP stdio server.
 mod commands;
 mod config;
@@ -51,16 +51,26 @@ impl PendingCommand {
 fn print_usage(action: Option<&str>) {
     match action {
         Some("session") => println!(
-            "Usage: rivet session [--network] [--allow-command NAME=EXECUTABLE] [--allow-subcommand NAME=VALUE] [--allow-any-args NAME]\nThe current directory is the workspace root. Child network access is disabled unless --network is supplied. Without command flags, Rivet prompts for built-in and custom commands. Tunnel credentials come from CONTROL_PLANE_TUNNEL_ID and CONTROL_PLANE_API_KEY; missing values are prompted with terminal echo disabled."
+            "Usage: rivet session [OPTIONS]\n\nConnect to OpenAI Secure MCP Tunnel. The current directory is the workspace.\nChild commands use the OS sandbox; child network access is disabled by default.\n\nOptions:\n  --network                     Enable child network access\n  --allow-command NAME=EXECUTABLE  Register a command (repeat for each command)\n  --allow-subcommand NAME=VALUE  Allow a first argument (repeat for each value)\n  --allow-any-args NAME          Allow all arguments for a registered command\n  -h, --help                    Print help\n\nWithout command flags, select built-in or custom commands interactively.\nCredentials: CONTROL_PLANE_TUNNEL_ID and CONTROL_PLANE_API_KEY.\nMissing credentials are prompted with terminal echo disabled. Ctrl+C cancels setup.\n\nExample:\n  rivet session --allow-command git=git --allow-subcommand git=status"
         ),
-        Some(action) if matches!(action, "serve" | "doctor" | "commands" | "config-check") => {
+        Some(action) if matches!(action, "serve" | "doctor" | "commands") => {
+            let description = match action {
+                "serve" => {
+                    "Run the MCP server over stdin/stdout. Child commands have no OS sandbox."
+                }
+                "doctor" => {
+                    "Validate stdio roots, commands, root access and stdio descriptors. This does not check the native sandbox or tunnel."
+                }
+                _ => {
+                    "Print registered commands, resolved executable paths and argument permissions."
+                }
+            };
             println!(
-                "Usage: rivet {} [--config PATH] --root PATH... [--allow-command NAME=EXECUTABLE]... [--allow-subcommand NAME=VALUE]... [--allow-any-args NAME]...",
-                action
+                "Usage: rivet {action} --root PATH [--root PATH]... [OPTIONS]\n\n{description}\n\nOptions:\n  --root PATH                   Allow a filesystem root (required; repeatable)\n  --allow-command NAME=EXECUTABLE  Register a command (repeatable)\n  --allow-subcommand NAME=VALUE  Allow a first argument (repeatable)\n  --allow-any-args NAME          Allow all arguments for a registered command\n  -h, --help                    Print help\n\nExample:\n  rivet {action} --root . --allow-command git=git --allow-subcommand git=status"
             )
         }
         _ => println!(
-            "Usage: rivet <serve|session|doctor|commands|config-check> [OPTIONS]\nRun `rivet <command> --help` for command options."
+            "Usage: rivet <COMMAND> [OPTIONS]\n\nCommands:\n  session   Connect the current workspace to OpenAI Secure MCP Tunnel\n  serve     Run an MCP server over stdin/stdout with explicit workspace roots\n  doctor    Check roots and commands for stdio mode\n  commands  Print registered command paths and argument permissions\n\nOptions:\n  -h, --help     Print help\n  -V, --version  Print version\n\nRun `rivet <command> --help` for command options.\nStart an interactive tunnel session with `rivet session`."
         ),
     }
 }
@@ -82,6 +92,10 @@ async fn main() -> ExitCode {
         print_usage(None);
         return ExitCode::FAILURE;
     };
+    if matches!(action.as_str(), "--version" | "-V") {
+        println!("rivet {}", env!("CARGO_PKG_VERSION"));
+        return ExitCode::SUCCESS;
+    }
     if matches!(action.as_str(), "help" | "--help" | "-h") {
         print_usage(None);
         return ExitCode::SUCCESS;
@@ -89,7 +103,10 @@ async fn main() -> ExitCode {
     if action == "session" {
         return session::run(args.collect()).await;
     }
-    let mut path = PathBuf::from("./rivet.toml");
+    if !matches!(action.as_str(), "serve" | "doctor" | "commands") {
+        eprintln!("unknown command: {action}");
+        return ExitCode::FAILURE;
+    }
     let mut roots = Vec::new();
     let mut command_args: BTreeMap<String, PendingCommand> = BTreeMap::new();
     while let Some(arg) = args.next() {
@@ -110,13 +127,12 @@ async fn main() -> ExitCode {
                 }
                 pending.allow_any_args = true;
             }
-            "--allow-command" | "--allow-subcommand" | "--config" | "--root" => {
+            "--allow-command" | "--allow-subcommand" | "--root" => {
                 let Some(value) = args.next() else {
                     eprintln!("{arg} requires a value");
                     return ExitCode::FAILURE;
                 };
                 match arg.as_str() {
-                    "--config" => path = PathBuf::from(value),
                     "--root" => roots.push(PathBuf::from(value)),
                     "--allow-command" => {
                         let (name, executable) = match assignment(&arg, &value) {
@@ -167,18 +183,14 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let config = match config::Config::load(&path, roots, command_specs) {
+    let config = match config::Config::new(roots, command_specs) {
         Ok(config) => Arc::new(config),
         Err(error) => {
-            eprintln!("CONFIG_ERROR: {error}");
+            eprintln!("STARTUP_ERROR: {error}");
             return ExitCode::FAILURE;
         }
     };
     let result = match action.as_str() {
-        "config-check" => {
-            println!("configuration valid");
-            Ok(())
-        }
         "doctor" => config.doctor().map(|()| println!("doctor ok")),
         "commands" => {
             for entry in &config.commands {

@@ -633,52 +633,120 @@ fn instance_id() -> String {
     format!("rivet-{}-{nanos}", std::process::id())
 }
 
-fn read_hidden(prompt: &str) -> Result<String, String> {
+async fn read_hidden(prompt: &str) -> Result<String, String> {
+    use std::os::fd::AsRawFd;
+    use tokio::signal::unix::{SignalKind, signal};
+
+    struct TerminalEcho {
+        fd: libc::c_int,
+        original: libc::termios,
+        flags: libc::c_int,
+        restored: bool,
+    }
+    impl TerminalEcho {
+        fn restore(&mut self) -> Result<(), String> {
+            // SAFETY: stdin remains open and original came from tcgetattr.
+            if unsafe { libc::tcsetattr(self.fd, libc::TCSANOW, &self.original) } != 0 {
+                return Err(format!(
+                    "could not restore terminal echo: {}",
+                    io::Error::last_os_error()
+                ));
+            }
+            // SAFETY: restore the file status flags saved from this live descriptor.
+            if unsafe { libc::fcntl(self.fd, libc::F_SETFL, self.flags) } < 0 {
+                return Err(format!(
+                    "could not restore stdin flags: {}",
+                    io::Error::last_os_error()
+                ));
+            }
+            self.restored = true;
+            Ok(())
+        }
+    }
+    impl Drop for TerminalEcho {
+        fn drop(&mut self) {
+            if !self.restored {
+                let _ = self.restore();
+            }
+        }
+    }
+
+    let mut interrupt = signal(SignalKind::interrupt()).map_err(|error| error.to_string())?;
+    let stdin = io::stdin();
+    let fd = stdin.as_raw_fd();
+    let mut original = std::mem::MaybeUninit::<libc::termios>::uninit();
+    // SAFETY: fd is live and original points to writable termios storage.
+    if unsafe { libc::tcgetattr(fd, original.as_mut_ptr()) } != 0 {
+        return Err(format!(
+            "could not read terminal settings: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    // SAFETY: tcgetattr initialized the value.
+    let original = unsafe { original.assume_init() };
+    // SAFETY: fcntl inspects the live stdin descriptor.
+    let flags = unsafe { libc::fcntl(fd, libc::F_GETFL) };
+    if flags < 0 {
+        return Err(io::Error::last_os_error().to_string());
+    }
+    let mut terminal = TerminalEcho {
+        fd,
+        original,
+        flags,
+        restored: false,
+    };
+    let mut hidden = original;
+    hidden.c_lflag &= !libc::ECHO;
+    // SAFETY: fd and the termios pointer are valid.
+    if unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &hidden) } != 0 {
+        return Err(format!(
+            "could not disable terminal echo: {}",
+            io::Error::last_os_error()
+        ));
+    }
+    // A signal can flush terminal input between poll and read; nonblocking reads avoid that race.
+    // SAFETY: fd is live and flags were obtained from this descriptor.
+    if unsafe { libc::fcntl(fd, libc::F_SETFL, flags | libc::O_NONBLOCK) } < 0 {
+        return Err(io::Error::last_os_error().to_string());
+    }
     print!("  {prompt}");
     io::stdout().flush().map_err(|error| error.to_string())?;
-    {
-        use std::os::fd::AsRawFd;
-
-        let stdin = io::stdin();
-        let fd = stdin.as_raw_fd();
-        let mut original = std::mem::MaybeUninit::<libc::termios>::uninit();
-        // SAFETY: fd is the live stdin terminal descriptor and `original` points
-        // to valid writable storage for one termios value.
-        if unsafe { libc::tcgetattr(fd, original.as_mut_ptr()) } != 0 {
-            return Err(format!(
-                "could not read terminal settings: {}",
-                io::Error::last_os_error()
-            ));
+    let mut value = Vec::new();
+    let result = loop {
+        tokio::select! {
+            biased;
+            _ = interrupt.recv() => break Err("Session setup cancelled: interrupted".to_owned()),
+            _ = sleep(Duration::from_millis(25)) => {
+                // Keep canonical terminal editing, including partial lines submitted with Ctrl+D.
+                let mut ready = libc::pollfd { fd, events: libc::POLLIN, revents: 0 };
+                // SAFETY: ready points to one initialized pollfd; the call does not block.
+                let status = unsafe { libc::poll(&mut ready, 1, 0) };
+                if status < 0 {
+                    let error = io::Error::last_os_error();
+                    if error.kind() == io::ErrorKind::Interrupted { continue; }
+                    break Err(error.to_string());
+                }
+                if status > 0 {
+                    let mut bytes = [0_u8; 4096];
+                    // SAFETY: bytes is writable for its length and fd remains open.
+                    let count = unsafe { libc::read(fd, bytes.as_mut_ptr().cast(), bytes.len()) };
+                    if count < 0 {
+                        let error = io::Error::last_os_error();
+                        if matches!(error.kind(), io::ErrorKind::Interrupted | io::ErrorKind::WouldBlock) { continue; }
+                        break Err(error.to_string());
+                    }
+                    if count == 0 { break Err("Session setup cancelled: input closed".to_owned()); }
+                    value.extend_from_slice(&bytes[..count as usize]);
+                    if value.ends_with(b"\n") {
+                        break String::from_utf8(value).map(|value| value.trim().to_owned()).map_err(|error| error.to_string());
+                    }
+                }
+            }
         }
-        // SAFETY: tcgetattr succeeded and initialized the value.
-        let original = unsafe { original.assume_init() };
-        let mut hidden = original;
-        hidden.c_lflag &= !libc::ECHO;
-        // SAFETY: both fd and the termios pointer are valid for this call.
-        if unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &hidden) } != 0 {
-            return Err(format!(
-                "could not disable terminal echo: {}",
-                io::Error::last_os_error()
-            ));
-        }
-
-        let mut value = String::new();
-        let read = stdin
-            .read_line(&mut value)
-            .map_err(|error| error.to_string());
-        // Restore terminal state even when the read itself failed.
-        // SAFETY: fd and the saved termios value remain valid here.
-        let restore = unsafe { libc::tcsetattr(fd, libc::TCSAFLUSH, &original) };
-        println!();
-        if restore != 0 {
-            return Err(format!(
-                "could not restore terminal echo: {}",
-                io::Error::last_os_error()
-            ));
-        }
-        read?;
-        Ok(value.trim().to_owned())
-    }
+    };
+    terminal.restore()?;
+    println!();
+    result
 }
 
 fn control_plane_base_url(value: Option<&str>, allow_unsafe: bool) -> Result<String, String> {
@@ -696,11 +764,11 @@ fn control_plane_base_url(value: Option<&str>, allow_unsafe: bool) -> Result<Str
     }
 }
 
-fn credentials() -> Result<(String, String, String), String> {
+async fn credentials() -> Result<(String, String, String), String> {
     let interactive = io::stdin().is_terminal();
     let tunnel_id = match env::var("CONTROL_PLANE_TUNNEL_ID") {
         Ok(value) if !value.is_empty() => value,
-        _ if interactive => read_hidden("Tunnel ID (input hidden): ")?,
+        _ if interactive => read_hidden("Tunnel ID (input hidden): ").await?,
         _ => return Err("CONTROL_PLANE_TUNNEL_ID is required without a terminal".into()),
     };
     if !valid_tunnel_id(&tunnel_id) {
@@ -708,7 +776,7 @@ fn credentials() -> Result<(String, String, String), String> {
     }
     let api_key = match env::var("CONTROL_PLANE_API_KEY") {
         Ok(value) if !value.is_empty() => value,
-        _ if interactive => read_hidden("Runtime API key (input hidden): ")?,
+        _ if interactive => read_hidden("Runtime API key (input hidden): ").await?,
         _ => return Err("CONTROL_PLANE_API_KEY is required without a terminal".into()),
     };
     if api_key.is_empty() {
@@ -723,7 +791,7 @@ fn credentials() -> Result<(String, String, String), String> {
 }
 
 pub async fn run(config: Arc<Config>) -> Result<(), String> {
-    let (base_url, tunnel_id, api_key) = credentials()?;
+    let (base_url, tunnel_id, api_key) = credentials().await?;
     let client = Client::new(base_url, tunnel_id, api_key)?;
     let runtime = Arc::new(Rivet::new(config));
 

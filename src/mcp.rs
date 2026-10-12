@@ -572,29 +572,8 @@ mod direct_tests {
             std::process::id()
         ));
         fs::create_dir(&root).unwrap();
-        let config_path = root.join("rivet.toml");
-        fs::write(
-            &config_path,
-            r#"[limits]
-max_stdout_bytes = 1024
-max_stderr_bytes = 1024
-max_file_read_bytes = 4096
-max_directory_entries = 64
-max_running_processes = 4
-default_timeout_ms = 1000
-max_timeout_ms = 10000
-[environment]
-pass = ["PATH"]
-allow_override = []
-"#,
-        )
-        .unwrap();
-        let config = Config::load(
-            &config_path,
-            vec![root.clone()],
-            BTreeMap::<String, CommandConfig>::new(),
-        )
-        .unwrap();
+        let config =
+            Config::new(vec![root.clone()], BTreeMap::<String, CommandConfig>::new()).unwrap();
         (Arc::new(config), root)
     }
 
@@ -665,8 +644,8 @@ allow_override = []
                 "name": "read_files",
                 "arguments": {
                     "files": [
-                        {"path": root.join("a.txt"), "limit": 3000},
-                        {"path": root.join("b.txt"), "limit": 3000}
+                        {"path": root.join("a.txt"), "limit": 3 * 1024 * 1024},
+                        {"path": root.join("b.txt"), "limit": 3 * 1024 * 1024}
                     ]
                 }
             }

@@ -1,5 +1,7 @@
 # Changelog
 
+This file records released versions. Historical entries describe those versions; see the README and `docs/` for the current source's interface.
+
 ## [0.3.0](https://github.com/agredyaev/rivet/compare/v0.2.12...v0.3.0) (2026-10-12)
 
 

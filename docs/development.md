@@ -2,7 +2,7 @@
 
 ## Local checks
 
-Install Rust with Edition 2024 support and Python 3. From the repository root:
+Install the current stable Rust toolchain and Python 3. From the repository root:
 
 ```sh
 cargo fmt --check
@@ -10,11 +10,40 @@ cargo clippy --locked --all-targets -- -D warnings
 cargo test --locked
 cargo build --locked --release
 python3 tests/smoke.py target/release/rivet
+python3 tests/install_smoke.py
+python3 tests/cli_ui.py target/release/rivet
+python3 tests/ci_mode.py
 ```
+
+## Dependency checks
+
+Install audit tools separately from Rivet's dependencies:
+
+```sh
+cargo install cargo-deny --version 0.20.2 --locked
+cargo install cargo-machete --version 0.9.2 --locked
+cargo deny --locked check
+cargo deny --locked --manifest-path fuzz/Cargo.toml --config deny.toml check
+cargo machete
+python3 tests/dependencies.py
+```
+
+`deny.toml` is a development policy, not a Rivet startup config. CI checks
+RustSec advisories, allowed licenses, dependency versions and sources for both
+production and fuzzing. Multiple transitive versions produce warnings; advisory
+exceptions are empty. All project and third-party licenses are checked, with
+NCSA allowed only for libfuzzer-sys. Rivet and its fuzz harness are licensed under MIT.
+
+The dependency check follows normal edges for all three release targets and
+stops at procedural macros. Build tools, fuzzing, audit tools, and the removed
+TOML parser must stay outside that runtime graph. This graph check does not
+measure which runtime functions survive LTO. Inspect final dynamic dependencies
+with `otool -L` on macOS and `readelf -d` on Linux; statically linked libraries
+will not appear in those lists.
 
 ## Fuzzing
 
-Release CI fuzzes the critical untrusted-input and bounded-state boundaries with seven production-backed targets:
+Full CI fuzzes the critical untrusted-input and bounded-state boundaries with seven production-backed targets:
 
 - `tunnel_wire`: malformed tunnel poll/command JSON, timeout parsing, JSON-RPC IDs, and tunnel IDs. A committed seed corpus and dictionary drive deep parser paths.
 - `tunnel_wire_structured`: valid generated tunnel commands with semantic invariants for correlation fields, command types, timeouts, future fields, JSON-RPC IDs, and tunnel IDs.
@@ -27,12 +56,14 @@ Release CI fuzzes the critical untrusted-input and bounded-state boundaries with
 Run a target locally with nightly, for example:
 
 ```sh
+rustup toolchain install nightly
+cargo install cargo-fuzz --version 0.13.2 --locked
 cargo +nightly fuzz run tunnel_wire -- -max_total_time=20 -timeout=2 -dict=fuzz/dictionaries/tunnel_wire.dict
 cargo +nightly fuzz run mcp_wire -- -max_total_time=20 -timeout=2 -dict=fuzz/dictionaries/mcp_wire.dict
 cargo +nightly fuzz run output_buffer -- -max_total_time=20 -timeout=2
 ```
 
-CI runs every target for 10 seconds before release artifacts are packaged. Committed seed corpora live under `fuzz/corpus/`; generated corpus growth, build output, and crash artifacts remain untracked.
+Full CI runs every target for 10 seconds before release artifacts are packaged. Version-only release CI reuses these checks from a successful full run on its baseline commit. Committed seed corpora live under `fuzz/corpus/`; generated corpus growth, build output, and crash artifacts remain untracked.
 
 ## Clippy
 
@@ -43,22 +74,34 @@ CI runs Clippy for all targets with `-D warnings`. The checked-in source has no 
 CI installs `cargo-zigbuild` and builds Linux x86_64 and Linux aarch64 targets on Ubuntu:
 
 ```sh
-python3 -m pip install cargo-zigbuild==0.23.4
+python3 -m pip install cargo-zigbuild==0.23.4 ziglang==0.17.0
 rustup target add x86_64-unknown-linux-gnu aarch64-unknown-linux-gnu
+export PATH="$(python3 -c 'import pathlib, ziglang; print(pathlib.Path(ziglang.__file__).parent)'):$PATH"
+test "$(zig version)" = "0.17.0"
 cargo zigbuild --locked --release \
   --target x86_64-unknown-linux-gnu \
   --target aarch64-unknown-linux-gnu
 ```
 
-The CI workflow runs native builds and smoke tests on macOS and Linux, plus cross-builds Linux x86_64/aarch64. Published GitHub releases contain `rivet-linux-x64.zip`, `rivet-linux-aarch64.zip`, and `rivet-darwin-arm64.zip`; Windows users run the Linux build under WSL2.
+The CI workflow runs native builds and smoke tests on macOS and Linux, plus cross-builds Linux x86_64/aarch64. The release archive names are `rivet-v<VERSION>-linux-x64.zip`, `rivet-v<VERSION>-linux-aarch64.zip`, and `rivet-v<VERSION>-darwin-arm64.zip`; Windows users run the Linux build under WSL2.
+
+With Zig installed through zvm, use `zvm install --nomirror 0.17.0` and prepend `"$HOME/.zvm/0.17.0"` to `PATH` instead of the Python package directory. Confirm `zig version` before building so an older system Zig cannot take precedence.
 
 ## Releases
 
 Use `fix:`, `perf:`, or `refactor:` for a patch release, `feat:` for a minor release, and `!` or `BREAKING CHANGE:` for a breaking release. After changes reach `main`, release-please opens a release PR and updates `Cargo.toml`, `Cargo.lock`, the version manifest, and `CHANGELOG.md`. Merge that PR to create the GitHub Release. Do not edit the package version by hand.
 
-CI builds, tests, fuzzes, cross-builds, verifies binary architectures, and packages the release artifacts before publication. The release workflow requires the tag to equal `v<Cargo.toml version>` and requires a successful CI run whose `head_sha` exactly matches the release tag commit. It downloads that run's `rivet-release-assets` artifact, rejects any file outside the three supported platform ZIPs plus `SHA256SUMS`, verifies the checksums, and uploads those exact files to the GitHub Release. It does not rebuild release binaries. To republish assets for an existing release, run the `Release` workflow manually with that tag.
+Source and dependency changes run full CI: dependency audits, formatting, Clippy, tests, fuzzing, native builds, cross-builds, architecture checks, smoke checks, and archive packaging.
+
+A version-only release runs builds and smoke checks without repeating formatting, Clippy, the Rust test suite, dependency audits, or fuzzing. CI allows this mode only when the diff from the first parent on `main` (or the PR base for a pull request) changes the root package version in `Cargo.toml` and `Cargo.lock`, the root release-manifest version, and optionally `CHANGELOG.md` or the matching root-package version in `fuzz/Cargo.lock`. All other content, dependencies, and file modes must remain unchanged. The version must increase and match across the required files.
+
+The baseline must have a successful full `push` CI run on `main`, including both native builds, cross-builds, dependency audits, fuzzing, and archive packaging. CI records the reused run and commit in the workflow summary. A missing baseline, incomplete checks, or a GitHub API lookup failure selects full CI. Manual `workflow_dispatch` runs always execute full checks. Release builds compile the new package version, so `rivet --version` and the archive names match the release.
+
+Packaging requires successful builds and smoke checks plus either completed full checks or the verified reuse decision. The release workflow requires the tag to equal `v<Cargo.toml version>` and requires a successful CI run whose `head_sha` exactly matches the release tag commit. It downloads that run's `rivet-release-assets` artifact, rejects any file outside the three supported platform ZIPs plus `SHA256SUMS`, verifies the checksums, and uploads those exact files to the GitHub Release. CI reads `<VERSION>` from Cargo.toml; publication checks it against the tag. Each ZIP contains `bin/rivet` and `LICENSE`. `SHA256SUMS` keeps its name and lists the versioned ZIPs. It does not rebuild release binaries. To republish assets for an existing release, run the `Release` workflow manually with that tag.
 
 Release Please uses `GITHUB_TOKEN`, so its generated release PR does not start a separate `pull_request` workflow. Source changes must pass CI before they reach `main`.
+
+CI ignores changes limited to Markdown or `docs/`. For a documentation-only release commit, run CI manually on that commit before publishing assets; the release gate still requires a successful run at the exact tag SHA.
 
 ## Profiling
 
