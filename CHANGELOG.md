@@ -2,6 +2,18 @@
 
 This file records released versions. Historical entries describe those versions; see the README and `docs/` for the current source's interface.
 
+## [1.0.0](https://github.com/agredyaev/rivet/compare/v0.3.0...v1.0.0) (2026-10-12)
+
+
+### ⚠ BREAKING CHANGES
+
+* Rivet no longer loads rivet.toml or supports --config and config-check. Roots and command permissions are supplied through CLI options.
+
+### Bug Fixes
+
+* correct CLI scope display and terminal cancellation ([252f6d8](https://github.com/agredyaev/rivet/commit/252f6d89d3341af0e7ae7e928495038a3ecfe331))
+* remove TOML startup configuration ([b97d1cc](https://github.com/agredyaev/rivet/commit/b97d1cc318942ff1eb1458c6300cc96d17482e64))
+
 ## [0.3.0](https://github.com/agredyaev/rivet/compare/v0.2.12...v0.3.0) (2026-10-12)
 
 
