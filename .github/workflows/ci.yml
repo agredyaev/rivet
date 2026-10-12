@@ -66,6 +66,7 @@ jobs:
           help=$(bash scripts/install.sh --help)
           grep -Fq -- '--allow-any-args NAME' <<< "$help"
           printf '%s\n' "$help"
+      - run: python3 tests/cli_ui.py target/release/rivet
       - run: python3 tests/install_smoke.py
       - run: python3 tests/smoke.py target/release/rivet
       - if: runner.os == 'macOS'

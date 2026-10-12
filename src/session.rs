@@ -40,7 +40,12 @@ fn read_line<R: BufRead, W: Write>(
     write!(output, "{prompt}")?;
     output.flush()?;
     let mut line = String::new();
-    input.read_line(&mut line)?;
+    if input.read_line(&mut line)? == 0 {
+        return Err(io::Error::new(
+            io::ErrorKind::UnexpectedEof,
+            "Session setup cancelled: input closed",
+        ));
+    }
     Ok(line.trim().to_owned())
 }
 
@@ -56,7 +61,6 @@ fn collect_scope<R: BufRead, W: Write>(
     } else {
         "Workspace"
     };
-    let check = if color { "\x1b[32m✓\x1b[0m" } else { "✓" };
     writeln!(output, "\n{heading}: {}", cwd.display()).map_err(|error| error.to_string())?;
     let root = cwd
         .canonicalize()
@@ -115,12 +119,13 @@ fn collect_scope<R: BufRead, W: Write>(
             add_custom = chosen.contains(&BUILT_INS.len());
             for index in chosen.into_iter().filter(|index| *index < BUILT_INS.len()) {
                 let (name, executable, access) = BUILT_INS[index];
+                let executable = prompt_executable(input, output, executable.to_owned())?;
                 let allowed_subcommands =
                     access.map(|items| items.split(',').map(str::to_owned).collect());
                 commands.push((
                     name.to_owned(),
                     CommandConfig {
-                        executable: executable.to_owned(),
+                        executable,
                         allowed_subcommands,
                     },
                 ));
@@ -147,6 +152,7 @@ fn collect_scope<R: BufRead, W: Write>(
                 .map_err(|error| error.to_string())?;
                     continue;
                 }
+                let executable = prompt_executable(input, output, executable)?;
                 let allowed = loop {
                     let value = read_line(
                         input,
@@ -191,29 +197,56 @@ fn collect_scope<R: BufRead, W: Write>(
         .map_err(|error| error.to_string())?;
     }
 
-    writeln!(output, "\nSession scope:").map_err(|error| error.to_string())?;
-    for root in &roots {
-        writeln!(output, "  {check} Workspace: {}", root.display())
-            .map_err(|error| error.to_string())?;
-    }
-    if commands.is_empty() {
-        writeln!(output, "  {check} Commands: none").map_err(|error| error.to_string())?;
-    } else {
-        for (name, command) in &commands {
-            let access = command
-                .allowed_subcommands
-                .as_ref()
-                .map(|values| values.join(", "))
-                .unwrap_or_else(|| "any arguments".to_owned());
-            writeln!(
-                output,
-                "  {check} {name} → {} ({access})",
-                command.executable
-            )
-            .map_err(|error| error.to_string())?;
-        }
-    }
     Ok(Scope { roots, commands })
+}
+
+fn prompt_executable<R: BufRead, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    mut executable: String,
+) -> Result<String, String> {
+    loop {
+        match crate::config::executable(&executable) {
+            Ok(_) => return Ok(executable),
+            Err(error) => writeln!(output, "{error}").map_err(|error| error.to_string())?,
+        }
+        executable = read_line(input, output, "Executable or path (replacement): ")
+            .map_err(|error| error.to_string())?;
+    }
+}
+
+fn print_scope<W: Write>(output: &mut W, config: &Config, color: bool) -> io::Result<()> {
+    let check = if color { "\x1b[32m✓\x1b[0m" } else { "✓" };
+    writeln!(output, "\nSession scope:")?;
+    for root in &config.roots {
+        writeln!(output, "  {check} Workspace: {}", root.path.display())?;
+    }
+    writeln!(
+        output,
+        "  {check} Child network: {}",
+        if config.sandbox_network {
+            "enabled"
+        } else {
+            "disabled"
+        }
+    )?;
+    if config.commands.is_empty() {
+        writeln!(output, "  {check} Commands: none")?;
+    }
+    for command in &config.commands {
+        let access = command
+            .allowed_subcommands
+            .as_ref()
+            .map(|values| values.join(", "))
+            .unwrap_or_else(|| "any arguments".to_owned());
+        writeln!(
+            output,
+            "  {check} {} → {} ({access})",
+            command.name,
+            command.path.display()
+        )?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -348,6 +381,11 @@ pub async fn run(args: Vec<String>) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
+    if let Err(error) = print_scope(&mut io::stdout().lock(), &config, color) {
+        eprintln!("Cannot print session scope: {error}");
+        return ExitCode::FAILURE;
+    }
+
     match crate::tunnel::run(config).await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
@@ -365,7 +403,7 @@ mod tests {
     #[test]
     fn selection_builds_builtin_and_custom_scope() {
         let cwd = env::current_dir().unwrap();
-        let input = Cursor::new("3,4,5,7\nhttp\ncurl\nGET,HEAD\ny\nhello\nprintf\n*\nn\n");
+        let input = Cursor::new("2,4,5,7\nhttp\ncurl\nGET,HEAD\ny\nhello\nsh\n*\nn\n");
         let mut input = input;
         let mut output = Vec::new();
         let scope = collect_scope(&mut input, &mut output, &cwd, true, false).unwrap();
@@ -376,21 +414,90 @@ mod tests {
         assert!(args.iter().any(|arg| arg == "cargo=check"));
         assert!(args.iter().any(|arg| arg == "cargo=metadata"));
         assert!(args.iter().any(|arg| arg == "cargo=build"));
-        assert!(args.iter().any(|arg| arg == "rg=rg"));
+        assert!(args.iter().any(|arg| arg == "mkdir=mkdir"));
         assert!(args.iter().any(|arg| arg == "http=curl"));
         assert!(args.iter().any(|arg| arg == "http=GET"));
         assert!(args.iter().any(|arg| arg == "http=HEAD"));
-        assert!(args.iter().any(|arg| arg == "hello=printf"));
+        assert!(args.iter().any(|arg| arg == "hello=sh"));
         assert!(args.iter().any(|arg| arg == "--allow-any-args"));
         assert!(
             !args
                 .iter()
-                .any(|arg| arg == "uv=uv" || arg == "mkdir=mkdir" || arg == "make=make")
+                .any(|arg| arg == "uv=uv" || arg == "rg=rg" || arg == "make=make")
         );
         let rendered = String::from_utf8(output).unwrap();
         assert!(rendered.contains("7. Add a custom command"));
         assert!(rendered.contains("1,3,7"));
-        assert!(rendered.contains("git → git"));
-        assert!(rendered.contains("http → curl"));
+        assert!(!rendered.contains("Session scope:"));
+    }
+    #[test]
+    fn eof_cancels_each_command_prompt() {
+        for input in [
+            "",
+            "7\n",
+            "7\ncustom\n",
+            "7\ncustom\n/bin/sh\n",
+            "7\ncustom\n/bin/sh\n*\n",
+        ] {
+            let mut output = Vec::new();
+            let error = collect_scope(
+                &mut Cursor::new(input),
+                &mut output,
+                &env::current_dir().unwrap(),
+                true,
+                false,
+            )
+            .err()
+            .unwrap();
+            assert!(error.contains("input closed"), "{error}");
+            assert!(output.len() < 4096);
+        }
+    }
+
+    #[test]
+    fn invalid_executable_can_be_replaced_without_losing_selection() {
+        let mut output = Vec::new();
+        let mut input = Cursor::new("2,7\ncustom\n/does/not/exist\n/bin/sh\n*\nn\n");
+        let scope = collect_scope(
+            &mut input,
+            &mut output,
+            &env::current_dir().unwrap(),
+            true,
+            false,
+        )
+        .unwrap();
+        assert_eq!(scope.commands.len(), 2);
+        assert_eq!(scope.commands[1].1.executable, "/bin/sh");
+        assert!(String::from_utf8(output).unwrap().contains("replacement"));
+    }
+
+    #[test]
+    fn summary_shows_validated_flags_and_network_policy() {
+        for network in [false, true] {
+            let (commands, _, _) = parse_args(vec![
+                "--allow-command".into(),
+                "shell=/bin/sh".into(),
+                "--allow-subcommand".into(),
+                "shell=-c".into(),
+            ])
+            .unwrap();
+            let config = Config::native_session(
+                vec![env::current_dir().unwrap()],
+                commands.into_iter().collect(),
+                network,
+            )
+            .unwrap();
+            let mut output = Vec::new();
+            print_scope(&mut output, &config, false).unwrap();
+            let rendered = String::from_utf8(output).unwrap();
+            assert!(rendered.contains("shell →"));
+            assert!(rendered.contains("(-c)"));
+            assert!(!rendered.contains("Commands: none"));
+            assert!(rendered.contains(if network {
+                "Child network: enabled"
+            } else {
+                "Child network: disabled"
+            }));
+        }
     }
 }

@@ -11,6 +11,7 @@ cargo test --locked
 cargo build --locked --release
 python3 tests/smoke.py target/release/rivet
 python3 tests/install_smoke.py
+python3 tests/cli_ui.py target/release/rivet
 ```
 
 ## Dependency checks

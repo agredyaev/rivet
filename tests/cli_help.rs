@@ -101,3 +101,23 @@ fn standalone_binary_starts_without_config_and_ignores_legacy_files() {
     }
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn version_identifies_binary_and_help_documents_repeated_roots() {
+    for flag in ["--version", "-V"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_rivet"))
+            .arg(flag)
+            .output()
+            .unwrap();
+        assert!(output.status.success());
+        assert_eq!(
+            String::from_utf8(output.stdout).unwrap(),
+            format!("rivet {}\n", env!("CARGO_PKG_VERSION"))
+        );
+    }
+    let output = Command::new(env!("CARGO_BIN_EXE_rivet"))
+        .args(["doctor", "--help"])
+        .output()
+        .unwrap();
+    assert!(String::from_utf8_lossy(&output.stdout).contains("--root PATH [--root PATH]..."));
+}

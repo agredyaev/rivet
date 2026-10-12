@@ -79,7 +79,7 @@ fn env_name(s: &str) -> bool {
     !s.is_empty() && !s.contains(['=', '\0'])
 }
 
-fn executable(input: &str) -> Result<PathBuf, String> {
+pub(crate) fn executable(input: &str) -> Result<PathBuf, String> {
     if input.is_empty() || input.contains('\0') {
         return Err("invalid executable".into());
     }

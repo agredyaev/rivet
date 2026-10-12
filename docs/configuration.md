@@ -2,7 +2,7 @@
 
 All Rivet modes use built-in resource limits and environment policies. No startup configuration file is required or loaded. Workspace roots and command permissions are selected at startup.
 
-Run `rivet --help` for the command list. Add `--help` or `-h` after `session`, `serve`, `doctor`, or `commands` to print that command's options.
+Run `rivet --version` to print the binary version and `rivet --help` for the command list. Add `--help` or `-h` after `session`, `serve`, `doctor`, or `commands` to print that command's options.
 
 ## Session scope
 
@@ -53,7 +53,7 @@ rivet serve \
 
 Repeat `--allow-command NAME=EXECUTABLE` for each program and `--allow-subcommand NAME=VALUE` for each permitted first argument. `EXECUTABLE` is resolved from `PATH`; a value containing a path separator is treated as a path. `--allow-any-args NAME` explicitly permits any arguments for that command. Stdio mode checks argument paths; native mode relies on the OS sandbox for filesystem access. Allowing a shell or interpreter with unrestricted arguments permits execution of code supplied in those arguments.
 
-Native sessions accept the same command flags and otherwise offer interactive command selection. Rivet passes arguments directly to the executable; it does not invoke a shell or interactive terminal. Restart with different flags to change the scope.
+Native sessions accept the same command flags and otherwise offer interactive command selection. Rivet passes arguments directly to the executable; it does not invoke a shell or interactive terminal. Setup validates command executables and allows replacing a missing executable before continuing. The final session summary shows resolved commands, allowed first arguments, and child network access after validation. Ctrl+C or EOF cancels setup; hidden credential prompts restore terminal echo before returning. Restart with different flags to change the scope.
 
 ## Validate and diagnose
 
