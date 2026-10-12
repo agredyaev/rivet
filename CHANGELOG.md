@@ -1,5 +1,36 @@
 # Changelog
 
+## [0.3.0](https://github.com/agredyaev/rivet/compare/v0.2.12...v0.3.0) (2026-10-12)
+
+
+### Features
+
+* native secure tunnel runtime and release hardening ([a2619b5](https://github.com/agredyaev/rivet/commit/a2619b537e7d28326fd17c510997fe73380ee57b))
+* native secure tunnel sandbox and regression gates ([4678ef2](https://github.com/agredyaev/rivet/commit/4678ef27a72b00808acbbab6c1991e44ce94e7b0))
+* **runtime:** harden agent guidance and release validation ([8c63cab](https://github.com/agredyaev/rivet/commit/8c63cabd1d1cc0dd1a477059a5ff1530756763bc))
+
+
+### Bug Fixes
+
+* allow macOS Xcode selector inside sandbox ([831a376](https://github.com/agredyaev/rivet/commit/831a37678eeb5eda0d7c11fdd930ea10c8f9ffcb))
+* bound default inline output to configured limit ([25bcc48](https://github.com/agredyaev/rivet/commit/25bcc48e7d8245bf5f9b54b75bb8a7a58c5492d5))
+* isolate Linux networking with seccomp ([d013909](https://github.com/agredyaev/rivet/commit/d013909dbb41550df674004ff09610eee5b65f85))
+* load Ubuntu bubblewrap AppArmor profile ([5966800](https://github.com/agredyaev/rivet/commit/59668002b7d1914f36908f7798f3faaf03a1128e))
+
+
+### Performance Improvements
+
+* collapse command round trips ([6fe0fca](https://github.com/agredyaev/rivet/commit/6fe0fcad7a64bed3028c587c951716145024e17c))
+* keep batch execution dependency-free ([1f2d26e](https://github.com/agredyaev/rivet/commit/1f2d26e11a6379eb9d252f1aeb970fc343eaab7b))
+* wait for fast commands and process activity ([dc2e769](https://github.com/agredyaev/rivet/commit/dc2e769ce76e78c72ce3243588d0c070ef65aa23))
+
+
+### Refactoring
+
+* keep process wait bound internal ([33f0081](https://github.com/agredyaev/rivet/commit/33f0081294536a06e07a0f65a740750ca9f333ae))
+* make command wait bounds explicit ([cb184c4](https://github.com/agredyaev/rivet/commit/cb184c4ce25211a74d46f4837cc3a608e2119739))
+* simplify process wait call ([e30534c](https://github.com/agredyaev/rivet/commit/e30534c1859005e10f62c0e6ae1f4ba360f35654))
+
 ## [0.2.12](https://github.com/agredyaev/rivet/compare/v0.2.11...v0.2.12) (2026-10-05)
 
 
