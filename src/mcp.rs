@@ -3,6 +3,7 @@
 //! Handlers delegate command, filesystem, and process policy to their modules
 //! and convert the results into MCP responses.
 use crate::{commands::CommandRequest, config::Config, filesystem, process::ProcessTable, profile};
+use rivet::mcp_wire::decode_client_message;
 use rmcp::{
     RoleServer, ServiceExt,
     handler::server::router::tool::ToolRouter,
@@ -102,7 +103,7 @@ impl Rivet {
         let total_started = profiling.then(Instant::now);
         let rss_before_bytes = profile::self_current_rss_bytes();
         let decode_started = profiling.then(Instant::now);
-        let message: ClientJsonRpcMessage = serde_json::from_slice(input)
+        let message: ClientJsonRpcMessage = decode_client_message(input)
             .map_err(|error| format!("invalid MCP JSON-RPC: {error}"))?;
         let decode_us = decode_started
             .as_ref()

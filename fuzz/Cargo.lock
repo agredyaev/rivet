@@ -1102,7 +1102,7 @@ dependencies = [
 
 [[package]]
 name = "rivet"
-version = "0.2.12"
+version = "0.3.0"
 dependencies = [
  "bytes",
  "cap-std",
@@ -1122,6 +1122,7 @@ dependencies = [
 name = "rivet-fuzz"
 version = "0.0.0"
 dependencies = [
+ "arbitrary",
  "libfuzzer-sys",
  "rivet",
  "serde_json",

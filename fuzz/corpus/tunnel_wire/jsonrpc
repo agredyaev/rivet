@@ -1,0 +1,1 @@
+{"commands":[{"request_id":"req_seed","shard_token":"shard_seed","command_type":"jsonrpc","channel":"main","response_timeout":"30s","jsonrpc":{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}}]}

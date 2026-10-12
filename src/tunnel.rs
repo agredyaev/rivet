@@ -14,9 +14,12 @@ use reqwest::{
     header::{AUTHORIZATION, CONTENT_TYPE, HeaderMap, HeaderValue, RETRY_AFTER},
     redirect::Policy,
 };
-use rivet::tunnel_wire::{
-    CommandType, WireCommand, extract_jsonrpc_id, parse_command, parse_poll,
-    parse_response_timeout, valid_tunnel_id,
+use rivet::{
+    tunnel_policy::{PostClass, backoff_base_ms, classify_post},
+    tunnel_wire::{
+        CommandType, WireCommand, extract_jsonrpc_id, parse_command, parse_poll,
+        parse_response_timeout, valid_tunnel_id,
+    },
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, value::RawValue};
@@ -65,14 +68,6 @@ struct TunnelResponse<'a> {
 struct Client {
     http: reqwest::Client,
     endpoint: String,
-}
-
-enum PostClass {
-    Accepted,
-    Terminal,
-    Retry,
-    Auth,
-    Fail,
 }
 
 fn profile_rpc_label(
@@ -331,7 +326,7 @@ impl Client {
                         })
                     });
 
-                    match classify_post(status) {
+                    match classify_post(status.as_u16()) {
                         PostClass::Accepted | PostClass::Terminal => return Ok(()),
                         PostClass::Auth => {
                             return Err(format!(
@@ -564,20 +559,6 @@ fn encode_response(
     .map_err(|error| error.to_string())
 }
 
-fn classify_post(status: StatusCode) -> PostClass {
-    match status {
-        StatusCode::OK => PostClass::Accepted,
-        StatusCode::NOT_FOUND => PostClass::Terminal,
-        StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN => PostClass::Auth,
-        StatusCode::REQUEST_TIMEOUT
-        | StatusCode::TOO_MANY_REQUESTS
-        | StatusCode::BAD_GATEWAY
-        | StatusCode::SERVICE_UNAVAILABLE
-        | StatusCode::GATEWAY_TIMEOUT => PostClass::Retry,
-        _ => PostClass::Fail,
-    }
-}
-
 fn retry_after(headers: &HeaderMap) -> Option<Duration> {
     let value = headers.get(RETRY_AFTER)?.to_str().ok()?.trim();
     if let Ok(seconds) = value.parse::<u64>() {
@@ -592,8 +573,7 @@ fn retry_after(headers: &HeaderMap) -> Option<Duration> {
 }
 
 fn backoff(attempt: u32) -> Duration {
-    let shift = attempt.saturating_sub(1).min(6);
-    let base = 200_u64.saturating_mul(1_u64 << shift).min(10_000);
+    let base = backoff_base_ms(attempt);
     let jitter = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.subsec_nanos() as u64 % ((base / 5).max(1) + 1))
@@ -1032,9 +1012,12 @@ mod tests {
 
     #[test]
     fn terminal_retry_set_matches_protocol() {
-        assert!(matches!(classify_post(StatusCode::OK), PostClass::Accepted));
         assert!(matches!(
-            classify_post(StatusCode::NOT_FOUND),
+            classify_post(StatusCode::OK.as_u16()),
+            PostClass::Accepted
+        ));
+        assert!(matches!(
+            classify_post(StatusCode::NOT_FOUND.as_u16()),
             PostClass::Terminal
         ));
         for status in [
@@ -1044,14 +1027,14 @@ mod tests {
             StatusCode::SERVICE_UNAVAILABLE,
             StatusCode::GATEWAY_TIMEOUT,
         ] {
-            assert!(matches!(classify_post(status), PostClass::Retry));
+            assert!(matches!(classify_post(status.as_u16()), PostClass::Retry));
         }
         assert!(matches!(
-            classify_post(StatusCode::UNAUTHORIZED),
+            classify_post(StatusCode::UNAUTHORIZED.as_u16()),
             PostClass::Auth
         ));
         assert!(matches!(
-            classify_post(StatusCode::BAD_REQUEST),
+            classify_post(StatusCode::BAD_REQUEST.as_u16()),
             PostClass::Fail
         ));
     }

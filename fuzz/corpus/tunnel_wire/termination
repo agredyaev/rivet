@@ -1,0 +1,1 @@
+{"commands":[{"request_id":"req_term","shard_token":"shard_term","command_type":"session_termination","channel":"main","response_timeout":"5s"}]}

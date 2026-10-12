@@ -14,13 +14,25 @@ python3 tests/smoke.py target/release/rivet
 
 ## Fuzzing
 
-The untrusted tunnel wire boundary is fuzzed with `fuzz/fuzz_targets/tunnel_wire.rs`:
+Release CI fuzzes the critical untrusted-input and bounded-state boundaries with seven production-backed targets:
+
+- `tunnel_wire`: malformed tunnel poll/command JSON, timeout parsing, JSON-RPC IDs, and tunnel IDs. A committed seed corpus and dictionary drive deep parser paths.
+- `tunnel_wire_structured`: valid generated tunnel commands with semantic invariants for correlation fields, command types, timeouts, future fields, JSON-RPC IDs, and tunnel IDs.
+- `tunnel_policy`: terminal/retry/auth HTTP classification and bounded monotonic retry backoff.
+- `mcp_wire`: MCP JSON-RPC decoding and stable request/notification/unsupported classification across serialize/parse round trips. A committed seed corpus and dictionary cover valid MCP shapes.
+- `command_policy`: exact subcommand admission, NUL rejection, and timeout bounds.
+- `path_policy`: workspace-relative path admission, parent traversal rejection, sibling-prefix rejection, and relative-path rejection.
+- `output_buffer`: bounded process-output capture, reset, offset reads, truncation, and invalid-offset handling.
+
+Run a target locally with nightly, for example:
 
 ```sh
-cargo +nightly fuzz run tunnel_wire -- -max_total_time=10 -timeout=2
+cargo +nightly fuzz run tunnel_wire -- -max_total_time=20 -timeout=2 -dict=fuzz/dictionaries/tunnel_wire.dict
+cargo +nightly fuzz run mcp_wire -- -max_total_time=20 -timeout=2 -dict=fuzz/dictionaries/mcp_wire.dict
+cargo +nightly fuzz run output_buffer -- -max_total_time=20 -timeout=2
 ```
 
-CI runs the same 10-second bounded fuzz target before release artifacts are packaged. Fuzz build output, corpus, and crash artifacts are generated locally and are not committed.
+CI runs every target for 10 seconds before release artifacts are packaged. Committed seed corpora live under `fuzz/corpus/`; generated corpus growth, build output, and crash artifacts remain untracked.
 
 ## Clippy
 

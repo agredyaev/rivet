@@ -71,7 +71,15 @@ jobs:
         with:
           toolchain: nightly
       - run: cargo install cargo-fuzz --version 0.13.2 --locked
-      - run: cargo fuzz run tunnel_wire -- -max_total_time=10 -timeout=2
+      - name: Fuzz critical input boundaries
+        run: |
+          cargo fuzz run tunnel_wire -- -max_total_time=10 -timeout=2 -dict=fuzz/dictionaries/tunnel_wire.dict
+          cargo fuzz run tunnel_wire_structured -- -max_total_time=10 -timeout=2
+          cargo fuzz run tunnel_policy -- -max_total_time=10 -timeout=2
+          cargo fuzz run mcp_wire -- -max_total_time=10 -timeout=2 -dict=fuzz/dictionaries/mcp_wire.dict
+          cargo fuzz run command_policy -- -max_total_time=10 -timeout=2
+          cargo fuzz run path_policy -- -max_total_time=10 -timeout=2
+          cargo fuzz run output_buffer -- -max_total_time=10 -timeout=2
 
   cross:
     runs-on: ubuntu-latest
