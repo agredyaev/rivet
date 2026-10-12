@@ -113,7 +113,7 @@ pub fn admitted(
     if !timeout_valid(timeout_ms, config.limits.max_timeout_ms) {
         return Err(Fault::new(
             "INVALID_REQUEST",
-            "timeout_ms is outside configured limits",
+            "timeout_ms is outside built-in limits",
         ));
     }
     let (root, relative) = config.root_for(Path::new(&request.cwd)).ok_or_else(|| {

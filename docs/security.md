@@ -48,4 +48,4 @@ When credentials are entered interactively, Rivet disables terminal echo for bot
 
 ## Legacy stdio mode
 
-The legacy `serve`/configuration commands remain available for local MCP clients. Their configured roots and argument checks are compatibility policy, not the native tunnel sandbox.
+The stdio commands (`serve`, `doctor`, `commands`) remain available for local MCP clients and use built-in resource limits and environment policies. Their configured roots and argument checks are compatibility policy, not the native tunnel sandbox.

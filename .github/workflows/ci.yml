@@ -41,7 +41,7 @@ jobs:
       - run: cargo test --locked
       - run: cargo build --locked --release
       - run: target/release/rivet --help && target/release/rivet serve --help
-      - run: target/release/rivet config-check --config rivet.example.toml --root .
+      - run: target/release/rivet doctor --root .
       - run: |
           bash -n scripts/install.sh
           help=$(bash scripts/install.sh --help)
@@ -138,7 +138,8 @@ jobs:
             rm -rf "$package_dir"
 
             entries="$(unzip -Z1 "dist/$asset")"
-            printf '%s\n' "$entries" | grep -Fxq "bin/$binary_name"
+            files="$(printf '%s\n' "$entries" | sed '/\/$/d')"
+            test "$files" = "bin/$binary_name"
             ! printf '%s\n' "$entries" | grep -Eq '(^|/)(scripts/|install\.sh$|install\.ps1$)'
           }
 

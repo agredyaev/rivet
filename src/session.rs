@@ -335,7 +335,7 @@ pub async fn run(args: Vec<String>) -> ExitCode {
     ) {
         Ok(config) => Arc::new(config),
         Err(error) => {
-            eprintln!("CONFIG_ERROR: {error}");
+            eprintln!("STARTUP_ERROR: {error}");
             return ExitCode::FAILURE;
         }
     };

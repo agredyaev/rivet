@@ -1,6 +1,6 @@
 # MCP tools
 
-Rivet exposes these tools through both the native tunnel and MCP stdio. Paths and command working directories must be absolute and within the effective workspace root. Native `session` uses embedded limits; stdio mode takes limits from [`rivet.toml`](configuration.md).
+Rivet exposes these tools through both the native tunnel and MCP stdio. Paths and command working directories must be absolute and within the effective workspace root. All modes use the [built-in limits](configuration.md#resource-limits).
 
 | Tool | Purpose |
 | --- | --- |
@@ -107,4 +107,4 @@ Process state exists only while the Rivet server is running. Up to `max_running_
 
 `replace_text` accepts `path`, `old`, `new`, `expected_occurrences`, and optional `expected_sha256`. The file is changed only when the number of exact matches equals `expected_occurrences` and the optional hash matches.
 
-Tool errors include a `code`, a human-readable `message`, and optional `details`. The implementation returns `INVALID_REQUEST`, `PATH_DENIED`, `COMMAND_NOT_FOUND`, `COMMAND_DENIED`, `SUBCOMMAND_DENIED`, `COMMAND_TIMEOUT`, `PROCESS_NOT_FOUND`, `PROCESS_LIMIT`, `OUTPUT_LIMIT`, `FILE_CHANGED`, `IO_ERROR`, `SPAWN_ERROR`, or `SANDBOX_ERROR`. CLI configuration failures print `CONFIG_ERROR` to stderr.
+Tool errors include a `code`, a human-readable `message`, and optional `details`. The implementation returns `INVALID_REQUEST`, `PATH_DENIED`, `COMMAND_NOT_FOUND`, `COMMAND_DENIED`, `SUBCOMMAND_DENIED`, `COMMAND_TIMEOUT`, `PROCESS_NOT_FOUND`, `PROCESS_LIMIT`, `OUTPUT_LIMIT`, `FILE_CHANGED`, `IO_ERROR`, `SPAWN_ERROR`, or `SANDBOX_ERROR`. CLI startup validation failures print `STARTUP_ERROR` to stderr.

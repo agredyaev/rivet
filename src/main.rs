@@ -1,6 +1,6 @@
 //! Rivet's executable entry point.
 //!
-//! Startup loads and validates configuration before dispatching to the CLI
+//! Startup validates roots and command permissions before dispatching to the CLI
 //! command or starting the MCP stdio server.
 mod commands;
 mod config;
@@ -53,14 +53,14 @@ fn print_usage(action: Option<&str>) {
         Some("session") => println!(
             "Usage: rivet session [--network] [--allow-command NAME=EXECUTABLE] [--allow-subcommand NAME=VALUE] [--allow-any-args NAME]\nThe current directory is the workspace root. Child network access is disabled unless --network is supplied. Without command flags, Rivet prompts for built-in and custom commands. Tunnel credentials come from CONTROL_PLANE_TUNNEL_ID and CONTROL_PLANE_API_KEY; missing values are prompted with terminal echo disabled."
         ),
-        Some(action) if matches!(action, "serve" | "doctor" | "commands" | "config-check") => {
+        Some(action) if matches!(action, "serve" | "doctor" | "commands") => {
             println!(
-                "Usage: rivet {} [--config PATH] --root PATH... [--allow-command NAME=EXECUTABLE]... [--allow-subcommand NAME=VALUE]... [--allow-any-args NAME]...",
+                "Usage: rivet {} --root PATH... [--allow-command NAME=EXECUTABLE]... [--allow-subcommand NAME=VALUE]... [--allow-any-args NAME]...",
                 action
             )
         }
         _ => println!(
-            "Usage: rivet <serve|session|doctor|commands|config-check> [OPTIONS]\nRun `rivet <command> --help` for command options."
+            "Usage: rivet <serve|session|doctor|commands> [OPTIONS]\nRun `rivet <command> --help` for command options."
         ),
     }
 }
@@ -89,7 +89,10 @@ async fn main() -> ExitCode {
     if action == "session" {
         return session::run(args.collect()).await;
     }
-    let mut path = PathBuf::from("./rivet.toml");
+    if !matches!(action.as_str(), "serve" | "doctor" | "commands") {
+        eprintln!("unknown command: {action}");
+        return ExitCode::FAILURE;
+    }
     let mut roots = Vec::new();
     let mut command_args: BTreeMap<String, PendingCommand> = BTreeMap::new();
     while let Some(arg) = args.next() {
@@ -110,13 +113,12 @@ async fn main() -> ExitCode {
                 }
                 pending.allow_any_args = true;
             }
-            "--allow-command" | "--allow-subcommand" | "--config" | "--root" => {
+            "--allow-command" | "--allow-subcommand" | "--root" => {
                 let Some(value) = args.next() else {
                     eprintln!("{arg} requires a value");
                     return ExitCode::FAILURE;
                 };
                 match arg.as_str() {
-                    "--config" => path = PathBuf::from(value),
                     "--root" => roots.push(PathBuf::from(value)),
                     "--allow-command" => {
                         let (name, executable) = match assignment(&arg, &value) {
@@ -167,18 +169,14 @@ async fn main() -> ExitCode {
             return ExitCode::FAILURE;
         }
     };
-    let config = match config::Config::load(&path, roots, command_specs) {
+    let config = match config::Config::new(roots, command_specs) {
         Ok(config) => Arc::new(config),
         Err(error) => {
-            eprintln!("CONFIG_ERROR: {error}");
+            eprintln!("STARTUP_ERROR: {error}");
             return ExitCode::FAILURE;
         }
     };
     let result = match action.as_str() {
-        "config-check" => {
-            println!("configuration valid");
-            Ok(())
-        }
         "doctor" => config.doctor().map(|()| println!("doctor ok")),
         "commands" => {
             for entry in &config.commands {

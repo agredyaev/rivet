@@ -65,19 +65,19 @@ The current directory is always the native session workspace. Child network acce
 If the MCP host starts Rivet directly instead of using `rivet session`:
 
 ```sh
-./bin/rivet serve --config ./rivet.toml --root /path/to/project \
+./bin/rivet serve --root /path/to/project \
   --allow-command git=git \
   --allow-subcommand git=status \
   --allow-subcommand git=diff
 ```
 
-`rivet session` uses the current directory as its only workspace root and requires no configuration file. The legacy stdio commands (`serve`, `doctor`, `commands`, `config-check`) continue to accept `--config` and `--root`.
+`rivet session` uses the current directory as its only workspace root. All modes use built-in resource limits and environment policies. For stdio mode, pass each workspace root with `--root`; repeat root and command flags to extend the scope.
 
 See [MCP setup](docs/mcp-setup.md) for Secure MCP Tunnel configuration.
 
 ## Documentation
 
-- [Configuration](docs/configuration.md)
+- [Startup options and limits](docs/configuration.md)
 - [MCP tools](docs/tools.md)
 - [MCP setup](docs/mcp-setup.md)
 - [Security model](docs/security.md)

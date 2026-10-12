@@ -184,7 +184,7 @@ The direct transport:
 
 - **Authentication or authorization failure:** verify the runtime API key and tunnel permissions.
 - **Invalid tunnel ID:** use the tunnel ID created in OpenAI Platform.
-- **`CONFIG_ERROR`:** validate the current workspace and allowed executables.
+- **`STARTUP_ERROR`:** validate the current workspace and allowed executables.
 - **`SANDBOX_ERROR`:** macOS requires the built-in Seatbelt backend; Linux/WSL2 requires `bubblewrap`. On Ubuntu 24.04, install `apparmor-profiles`, copy `bwrap-userns-restrict` from `/usr/share/apparmor/extra-profiles/` to `/etc/apparmor.d/`, and load it with `apparmor_parser -r`.
 - **`COMMAND_NOT_FOUND`:** restart the session with that command explicitly allowed.
 - **`PATH_DENIED`:** use an absolute path under one of the roots returned by `list_roots`.
