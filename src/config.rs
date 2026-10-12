@@ -313,9 +313,8 @@ impl Config {
             return None;
         }
         self.roots.iter().find_map(|root| {
-            path.strip_prefix(&root.path)
-                .or_else(|_| path.strip_prefix(&root.configured))
-                .ok()
+            rivet::path_policy::relative_under(&root.path, path)
+                .or_else(|| rivet::path_policy::relative_under(&root.configured, path))
                 .map(|relative| (root, relative))
         })
     }

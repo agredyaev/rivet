@@ -8,6 +8,7 @@ use crate::{
     sandbox,
 };
 use cap_std::fs::Dir;
+use rivet::command_policy::{arguments_valid, subcommand_allowed, timeout_valid};
 use serde::Deserialize;
 use serde_json::json;
 use std::{collections::BTreeMap, fs, io, path::Path, process::Stdio};
@@ -95,25 +96,21 @@ pub fn admitted(
     let (command_id, entry) = config
         .command(&request.command)
         .ok_or_else(|| Fault::new("COMMAND_NOT_FOUND", "command is not registered"))?;
-    if let Some(allowed_subcommands) = &entry.allowed_subcommands
-        && !allowed_subcommands
-            .iter()
-            .any(|subcommand| request.args.first() == Some(subcommand))
-    {
+    if !subcommand_allowed(entry.allowed_subcommands.as_deref(), &request.args) {
         return Err(Fault::with(
             "SUBCOMMAND_DENIED",
             "subcommand is not allowed",
             json!({"command": request.command, "subcommand": request.args.first()}),
         ));
     }
-    if request.args.iter().any(|arg| arg.contains('\0')) {
+    if !arguments_valid(&request.args) {
         return Err(Fault::new(
             "INVALID_REQUEST",
             "command argument contains NUL",
         ));
     }
     let timeout_ms = request.timeout_ms.unwrap_or(default_timeout);
-    if timeout_ms == 0 || timeout_ms > config.limits.max_timeout_ms {
+    if !timeout_valid(timeout_ms, config.limits.max_timeout_ms) {
         return Err(Fault::new(
             "INVALID_REQUEST",
             "timeout_ms is outside configured limits",

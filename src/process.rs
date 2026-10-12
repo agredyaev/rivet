@@ -10,6 +10,7 @@ use crate::{
     mcp::Fault,
     profile,
 };
+use rivet::output_buffer::{Buffer, OutputSlice, SliceError};
 use serde::Serialize;
 use serde_json::json;
 use std::{
@@ -46,64 +47,6 @@ pub struct Status {
     pub timed_out: bool,
     pub stopped: bool,
     pub duration_ms: Option<u64>,
-}
-
-struct Buffer {
-    bytes: Vec<u8>,
-    total: u64,
-}
-
-impl Buffer {
-    fn with_capacity(cap: usize) -> Self {
-        Self {
-            bytes: Vec::with_capacity(cap),
-            total: 0,
-        }
-    }
-
-    fn reset(&mut self) {
-        self.bytes.clear();
-        self.total = 0;
-    }
-
-    fn append(&mut self, chunk: &[u8], cap: usize) {
-        self.total = self.total.saturating_add(chunk.len() as u64);
-        let count = chunk.len().min(cap.saturating_sub(self.bytes.len()));
-        self.bytes.extend_from_slice(&chunk[..count]);
-    }
-
-    fn slice(&self, offset: u64, limit: usize, cap: usize) -> Result<OutputSlice, Fault> {
-        if offset > self.total {
-            return Err(Fault::new(
-                "INVALID_REQUEST",
-                "output offset is beyond received bytes",
-            ));
-        }
-
-        let start = (offset as usize).min(self.bytes.len());
-        let end = start.saturating_add(limit).min(self.bytes.len());
-        let next_offset =
-            if offset as usize >= self.bytes.len() && self.total > self.bytes.len() as u64 {
-                self.total
-            } else {
-                end as u64
-            };
-
-        Ok(OutputSlice {
-            text: String::from_utf8_lossy(&self.bytes[start..end]).into_owned(),
-            next_offset,
-            total_bytes: self.total,
-            truncated: self.total > cap as u64,
-        })
-    }
-}
-
-#[derive(Serialize)]
-struct OutputSlice {
-    text: String,
-    next_offset: u64,
-    total_bytes: u64,
-    truncated: bool,
 }
 
 struct OutputStore {
@@ -172,15 +115,18 @@ impl OutputStore {
             .lock()
             .unwrap()
             .slice(offset, limit, cap)
+            .map_err(|SliceError::OffsetBeyondTotal| {
+                Fault::new("INVALID_REQUEST", "output offset is beyond received bytes")
+            })
     }
 
     fn totals(&self, slot: usize) -> (u64, u64, bool) {
         let stdout = self.streams[Self::index(slot, false)].lock().unwrap();
         let stderr = self.streams[Self::index(slot, true)].lock().unwrap();
         (
-            stdout.total,
-            stderr.total,
-            stdout.total > self.stdout_cap as u64 || stderr.total > self.stderr_cap as u64,
+            stdout.total(),
+            stderr.total(),
+            stdout.total() > self.stdout_cap as u64 || stderr.total() > self.stderr_cap as u64,
         )
     }
 
@@ -188,12 +134,12 @@ impl OutputStore {
         let stdout = self.streams[Self::index(slot, false)].lock().unwrap();
         let stderr = self.streams[Self::index(slot, true)].lock().unwrap();
         (
-            stdout.total,
-            stderr.total,
-            stdout.bytes.len(),
-            stderr.bytes.len(),
-            stdout.total > self.stdout_cap as u64,
-            stderr.total > self.stderr_cap as u64,
+            stdout.total(),
+            stderr.total(),
+            stdout.len(),
+            stderr.len(),
+            stdout.total() > self.stdout_cap as u64,
+            stderr.total() > self.stderr_cap as u64,
         )
     }
 }
@@ -959,13 +905,11 @@ mod tests {
         let before = output.streams[OutputStore::index(2, false)]
             .lock()
             .unwrap()
-            .bytes
             .capacity();
         output.reset(2);
         let after = output.streams[OutputStore::index(2, false)]
             .lock()
             .unwrap()
-            .bytes
             .capacity();
 
         assert_eq!(before, 1024);
