@@ -66,6 +66,7 @@ jobs:
           help=$(bash scripts/install.sh --help)
           grep -Fq -- '--allow-any-args NAME' <<< "$help"
           printf '%s\n' "$help"
+      - run: python3 tests/install_smoke.py
       - run: python3 tests/smoke.py target/release/rivet
       - if: runner.os == 'macOS'
         run: |
@@ -146,6 +147,8 @@ jobs:
       - name: Package tested release assets
         run: |
           set -euo pipefail
+          version="$(sed -n 's/^version = "\([^" ]*\)"/\1/p' Cargo.toml | head -n1)"
+          test -n "$version"
           mkdir -p dist
 
           package() {
@@ -166,14 +169,14 @@ jobs:
             ! printf '%s\n' "$entries" | grep -Eq '(^|/)(scripts/|install\.sh$|install\.ps1$)'
           }
 
-          package staged/cross/x86_64-unknown-linux-gnu/release/rivet rivet rivet-linux-x64.zip
-          package staged/cross/aarch64-unknown-linux-gnu/release/rivet rivet rivet-linux-aarch64.zip
-          package staged/macos/rivet rivet rivet-darwin-arm64.zip
+          package staged/cross/x86_64-unknown-linux-gnu/release/rivet rivet "rivet-v$version-linux-x64.zip"
+          package staged/cross/aarch64-unknown-linux-gnu/release/rivet rivet "rivet-v$version-linux-aarch64.zip"
+          package staged/macos/rivet rivet "rivet-v$version-darwin-arm64.zip"
 
           (cd dist && sha256sum rivet-*.zip > SHA256SUMS)
           (cd dist && sha256sum -c SHA256SUMS)
 
-          expected="$(printf '%s\n' SHA256SUMS rivet-darwin-arm64.zip rivet-linux-aarch64.zip rivet-linux-x64.zip | sort)"
+          expected="$(printf '%s\n' SHA256SUMS "rivet-v$version-darwin-arm64.zip" "rivet-v$version-linux-aarch64.zip" "rivet-v$version-linux-x64.zip" | sort)"
           actual="$(find dist -maxdepth 1 -type f -exec basename {} \; | sort)"
           if [[ "$actual" != "$expected" ]]; then
             echo "::error::Unexpected release artifact set."

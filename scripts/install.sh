@@ -59,7 +59,6 @@ if [[ "$os" == 'darwin' && "$arch" != 'arm64' ]]; then
   printf 'Rivet releases currently support macOS arm64 only.\n' >&2
   exit 1
 fi
-asset="rivet-$os-$arch.zip"
 
 rivet_note 'Resolving the Rivet version from main...'
 version="$(curl -fsSL "$manifest_url" | awk -F'"' '$2 == "." { print $4; exit }')"
@@ -69,9 +68,14 @@ if [[ ! "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+([.-][A-Za-z0-9.-]+)?$ ]]; then
 fi
 tag="v$version"
 release_url="$download_base/$tag"
+asset="rivet-$tag-$os-$arch.zip"
 if ! curl -fsSIL -o /dev/null "$release_url/$asset"; then
-  rivet_error "Release $tag is not published or is missing $asset. Refusing to install an older release."
-  exit 1
+  # Older releases used unversioned asset names; keep the same release tag.
+  asset="rivet-$os-$arch.zip"
+  if ! curl -fsSIL -o /dev/null "$release_url/$asset"; then
+    rivet_error "Release $tag is not published or has no archive for $os/$arch. Refusing to install an older release."
+    exit 1
+  fi
 fi
 rivet_ok "Release: $tag ($asset)"
 

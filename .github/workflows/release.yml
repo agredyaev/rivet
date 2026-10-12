@@ -93,9 +93,9 @@ jobs:
           set -euo pipefail
 
           expected=(
-            rivet-linux-x64.zip
-            rivet-linux-aarch64.zip
-            rivet-darwin-arm64.zip
+            "rivet-$TAG-linux-x64.zip"
+            "rivet-$TAG-linux-aarch64.zip"
+            "rivet-$TAG-darwin-arm64.zip"
             SHA256SUMS
           )
           for asset in "${expected[@]}"; do
