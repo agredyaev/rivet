@@ -2,6 +2,26 @@
 
 This file records released versions. Historical entries describe those versions; see the README and `docs/` for the current source's interface.
 
+## [1.1.0](https://github.com/agredyaev/rivet/compare/v1.0.0...v1.1.0) (2026-10-16)
+
+
+### ⚠ BREAKING CHANGES
+
+* collapse Rivet to a single sandboxed session
+
+### Bug Fixes
+
+* sync fuzz lockfile with package version ([326368c](https://github.com/agredyaev/rivet/commit/326368c877265ae5493631fa845241d98a5d168c))
+* sync fuzz rustls lockfile ([1538b3c](https://github.com/agredyaev/rivet/commit/1538b3c44d7876c926f602ded0faeedbde523533))
+* update rustls past current advisories ([27d192a](https://github.com/agredyaev/rivet/commit/27d192aa935d8682a9720c06d28c2ba4399c8423))
+* use canonical workspace paths in macOS tests ([ae23c0c](https://github.com/agredyaev/rivet/commit/ae23c0cec89892b15b62e8b531fc3cad8ccb5b2b))
+
+
+### Refactoring
+
+* collapse Rivet to a single sandboxed session ([d5506fc](https://github.com/agredyaev/rivet/commit/d5506fcb681c2c585b5281a4e74b9820dbbd804b))
+* remove derived runtime policy state ([60a8da5](https://github.com/agredyaev/rivet/commit/60a8da5207e554ebc41a1fdfd68e418f2292024e))
+
 ## [1.0.0](https://github.com/agredyaev/rivet/compare/v0.3.0...v1.0.0) (2026-10-12)
 
 
