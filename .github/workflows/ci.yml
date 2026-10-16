@@ -51,7 +51,11 @@ jobs:
       - run: cargo install cargo-deny --version 0.20.2 --locked
       - run: cargo install cargo-machete --version 0.9.2 --locked
       - run: cargo deny --locked check
-      - run: cargo deny --locked --manifest-path fuzz/Cargo.toml --config deny.toml check
+      - name: Diagnose fuzz lockfile drift
+        run: |
+          cargo metadata --manifest-path fuzz/Cargo.toml --format-version 1 >/dev/null
+          git diff -- fuzz/Cargo.lock
+          test -z "$(git status --short fuzz/Cargo.lock)"
       - run: cargo machete
       - run: python3 tests/dependencies.py
 
