@@ -2,7 +2,10 @@
 //!
 //! Paths are opened relative to the configured directory capabilities. Writes
 //! reject final symlinks; overwrites stage a complete file before installing it.
-use crate::{config::Config, mcp::Fault};
+use crate::{
+    config::{Config, MAX_DIRECTORY_ENTRIES, MAX_TEXT_BYTES},
+    mcp::Fault,
+};
 use cap_std::fs::{Dir, OpenOptions, OpenOptionsExt};
 use serde::Deserialize;
 use serde_json::{Value, json};
@@ -161,10 +164,8 @@ fn check_sha(
 
 pub fn list(config: &Config, request: ListRequest) -> Result<Value, Fault> {
     let depth = request.depth.unwrap_or(1);
-    let max = request
-        .max_entries
-        .unwrap_or(config.limits.max_directory_entries);
-    if depth == 0 || depth > 16 || max == 0 || max > config.limits.max_directory_entries {
+    let max = request.max_entries.unwrap_or(MAX_DIRECTORY_ENTRIES);
+    if depth == 0 || depth > 16 || max == 0 || max > MAX_DIRECTORY_ENTRIES {
         return Err(Fault::new(
             "INVALID_REQUEST",
             "directory depth or entry limit is outside configured bounds",
@@ -214,8 +215,8 @@ pub fn list(config: &Config, request: ListRequest) -> Result<Value, Fault> {
 }
 
 pub fn read(config: &Config, request: ReadRequest) -> Result<Value, Fault> {
-    let limit = request.limit.unwrap_or(config.limits.max_file_read_bytes);
-    if limit == 0 || limit > config.limits.max_file_read_bytes {
+    let limit = request.limit.unwrap_or(MAX_TEXT_BYTES);
+    if limit == 0 || limit > MAX_TEXT_BYTES {
         return Err(Fault::new(
             "INVALID_REQUEST",
             "read limit is outside configured bounds",
@@ -306,7 +307,7 @@ fn atomic_install(
 }
 
 pub fn write(config: &Config, request: WriteRequest) -> Result<Value, Fault> {
-    if request.content.len() > config.limits.max_file_read_bytes {
+    if request.content.len() > MAX_TEXT_BYTES {
         return Err(Fault::new(
             "OUTPUT_LIMIT",
             "content exceeds max_file_read_bytes",
@@ -356,9 +357,7 @@ pub fn replace(config: &Config, request: ReplaceRequest) -> Result<Value, Fault>
     if request.old.is_empty() {
         return Err(Fault::new("INVALID_REQUEST", "old must be nonempty"));
     }
-    if request.old.len() > config.limits.max_file_read_bytes
-        || request.new.len() > config.limits.max_file_read_bytes
-    {
+    if request.old.len() > MAX_TEXT_BYTES || request.new.len() > MAX_TEXT_BYTES {
         return Err(Fault::new(
             "OUTPUT_LIMIT",
             "replacement input exceeds max_file_read_bytes",
@@ -372,10 +371,10 @@ pub fn replace(config: &Config, request: ReplaceRequest) -> Result<Value, Fault>
         .map_err(|e| io_error("failed to seek file", e))?;
     let mut bytes = Vec::new();
     (&mut file)
-        .take(config.limits.max_file_read_bytes as u64 + 1)
+        .take(MAX_TEXT_BYTES as u64 + 1)
         .read_to_end(&mut bytes)
         .map_err(|e| io_error("failed to read file", e))?;
-    if bytes.len() > config.limits.max_file_read_bytes {
+    if bytes.len() > MAX_TEXT_BYTES {
         return Err(Fault::new(
             "OUTPUT_LIMIT",
             "file exceeds max_file_read_bytes",
@@ -402,7 +401,7 @@ pub fn replace(config: &Config, request: ReplaceRequest) -> Result<Value, Fault>
         .checked_sub(removed)
         .and_then(|n| n.checked_add(added))
         .ok_or_else(|| Fault::new("OUTPUT_LIMIT", "replacement output length overflows"))?;
-    if output_len > config.limits.max_file_read_bytes {
+    if output_len > MAX_TEXT_BYTES {
         return Err(Fault::new(
             "OUTPUT_LIMIT",
             "replacement output exceeds max_file_read_bytes",

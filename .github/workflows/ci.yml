@@ -90,12 +90,11 @@ jobs:
         run: otool -L target/release/rivet
       - if: runner.os == 'Linux'
         run: readelf -d target/release/rivet
-      - run: target/release/rivet --help && target/release/rivet serve --help
-      - run: target/release/rivet doctor --root .
+      - run: target/release/rivet --help && target/release/rivet session --help
       - run: |
           bash -n scripts/install.sh
           help=$(bash scripts/install.sh --help)
-          grep -Fq -- '--allow-any-args NAME' <<< "$help"
+          grep -Fq -- '--pass-env NAME' <<< "$help"
           printf '%s\n' "$help"
       - run: python3 tests/cli_ui.py target/release/rivet
       - run: python3 tests/install_smoke.py

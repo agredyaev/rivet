@@ -19,7 +19,7 @@ rivet_error() { printf '  %b✗%b %s\n' "$red" "$reset" "$1" >&2; }
 rivet_header
 
 if [[ "${1:-}" == '--help' || "${1:-}" == '-h' ]]; then
-  printf 'Usage: curl -fsSL https://raw.githubusercontent.com/%s/main/scripts/install.sh | bash -s -- [--help] [--allow-command NAME=EXECUTABLE] [--allow-subcommand NAME=VALUE] [--allow-any-args NAME]\n' "$repo"
+  printf 'Usage: curl -fsSL https://raw.githubusercontent.com/%s/main/scripts/install.sh | bash -s -- [--help] [--allow-command NAME=EXECUTABLE] [--pass-env NAME] [--network]\n' "$repo"
   printf 'Downloads the latest verified Rivet release, installs it under %s, and starts one tunnel session.\n' "$install_root"
   exit 0
 fi

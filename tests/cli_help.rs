@@ -1,109 +1,46 @@
-use std::{
-    fs,
-    process::Command,
-    time::{SystemTime, UNIX_EPOCH},
-};
+use std::process::Command;
 
 #[test]
-fn help_ignores_legacy_config_file() {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let directory =
-        std::env::temp_dir().join(format!("rivet-cli-help-{}-{nonce}", std::process::id()));
-    fs::create_dir(&directory).unwrap();
-    fs::write(directory.join("rivet.toml"), "[unsupported]\n").unwrap();
+fn help_exposes_only_session_runtime() {
+    let binary = env!("CARGO_BIN_EXE_rivet");
 
-    for args in [
-        vec!["--help"],
-        vec!["serve", "--help"],
-        vec!["session", "--help"],
-        vec!["doctor", "--help"],
-        vec!["commands", "-h"],
-    ] {
-        let output = Command::new(env!("CARGO_BIN_EXE_rivet"))
-            .args(&args)
-            .current_dir(&directory)
-            .output()
-            .unwrap();
-        assert!(output.status.success());
-        let stdout = String::from_utf8_lossy(&output.stdout);
-        assert!(stdout.contains("Usage: rivet"));
-        assert!(!stdout.contains("--config"));
-        assert!(!stdout.contains("config-check"));
-        if args.first() == Some(&"session") {
-            assert!(stdout.contains("CONTROL_PLANE_TUNNEL_ID"));
-            assert!(stdout.contains("CONTROL_PLANE_API_KEY"));
-            assert!(stdout.contains("terminal echo disabled"));
-        }
-    }
+    let root = Command::new(binary).arg("--help").output().unwrap();
+    assert!(root.status.success());
+    let root_help = String::from_utf8_lossy(&root.stdout);
+    assert!(root_help.contains("session"));
+    assert!(!root_help.contains("\n  serve"));
+    assert!(!root_help.contains("\n  doctor"));
+    assert!(!root_help.contains("\n  commands"));
 
-    fs::remove_dir_all(directory).unwrap();
+    let session = Command::new(binary)
+        .args(["session", "--help"])
+        .output()
+        .unwrap();
+    assert!(session.status.success());
+    let session_help = String::from_utf8_lossy(&session.stdout);
+    assert!(session_help.contains("--allow-command NAME=EXECUTABLE"));
+    assert!(session_help.contains("--pass-env NAME"));
+    assert!(session_help.contains("--network"));
+    assert!(!session_help.contains("--allow-subcommand"));
+    assert!(!session_help.contains("--allow-any-args"));
+    assert!(!session_help.contains("--root"));
 }
 
 #[test]
-fn standalone_binary_starts_without_config_and_ignores_legacy_files() {
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap()
-        .as_nanos();
-    let root =
-        std::env::temp_dir().join(format!("rivet-standalone-{}-{nonce}", std::process::id()));
-    let workspace = root.join("workspace");
-    fs::create_dir_all(&workspace).unwrap();
-    let binary = root.join("rivet");
-    fs::copy(env!("CARGO_BIN_EXE_rivet"), &binary).unwrap();
-
-    for legacy_file in [false, true] {
-        if legacy_file {
-            for directory in [&root, &workspace] {
-                fs::write(directory.join("rivet.toml"), "invalid TOML\n").unwrap();
-            }
-        }
-        for action in ["doctor", "commands"] {
-            let output = Command::new(&binary)
-                .args([action, "--root", "."])
-                .current_dir(&workspace)
-                .output()
-                .unwrap();
-            assert!(
-                output.status.success(),
-                "{}",
-                String::from_utf8_lossy(&output.stderr)
-            );
-        }
-    }
-
-    for (args, message) in [
-        (
-            vec!["doctor", "--config", "missing.toml"],
-            "unknown argument: --config",
-        ),
-        (
-            vec!["config-check", "--help"],
-            "unknown command: config-check",
-        ),
-        (vec!["doctor"], "at least one --root is required"),
-        (vec!["doctor", "--root", "missing"], "STARTUP_ERROR"),
-        (
-            vec!["doctor", "--root", ".", "--root", "."],
-            "duplicate root",
-        ),
-    ] {
-        let output = Command::new(&binary)
-            .args(args)
-            .current_dir(&workspace)
-            .output()
-            .unwrap();
+fn removed_runtime_commands_fail_closed() {
+    let binary = env!("CARGO_BIN_EXE_rivet");
+    for command in ["serve", "doctor", "commands"] {
+        let output = Command::new(binary).arg(command).output().unwrap();
         assert!(!output.status.success());
-        assert!(String::from_utf8_lossy(&output.stderr).contains(message));
+        assert!(
+            String::from_utf8_lossy(&output.stderr)
+                .contains(&format!("unknown command: {command}"))
+        );
     }
-    fs::remove_dir_all(root).unwrap();
 }
 
 #[test]
-fn version_identifies_binary_and_help_documents_repeated_roots() {
+fn version_identifies_binary() {
     for flag in ["--version", "-V"] {
         let output = Command::new(env!("CARGO_BIN_EXE_rivet"))
             .arg(flag)
@@ -115,9 +52,4 @@ fn version_identifies_binary_and_help_documents_repeated_roots() {
             format!("rivet {}\n", env!("CARGO_PKG_VERSION"))
         );
     }
-    let output = Command::new(env!("CARGO_BIN_EXE_rivet"))
-        .args(["doctor", "--help"])
-        .output()
-        .unwrap();
-    assert!(String::from_utf8_lossy(&output.stdout).contains("--root PATH [--root PATH]..."));
 }

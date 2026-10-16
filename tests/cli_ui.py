@@ -16,13 +16,14 @@ env = {key: value for key, value in os.environ.items() if key not in (
     'RIVET_ALLOW_UNSAFE_CONTROL_PLANE',
 )}
 env['NO_COLOR'] = '1'
-flags = ['--allow-command', 'shell=/bin/sh', '--allow-subcommand', 'shell=-c']
+flags = ['--allow-command', 'shell=/bin/sh']
 
 for network in (False, True):
     result = subprocess.run([binary, 'session', *flags, *(['--network'] if network else [])],
                             input='', text=True, capture_output=True, env=env, timeout=5)
     assert result.returncode != 0
-    assert 'shell →' in result.stdout and '(-c)' in result.stdout, result.stdout
+    assert 'shell →' in result.stdout, result.stdout
+    assert 'first argument' not in result.stdout and 'any arguments' not in result.stdout
     assert 'Commands: none' not in result.stdout
     assert f'Child network: {"enabled" if network else "disabled"}' in result.stdout
     assert 'CONTROL_PLANE_TUNNEL_ID is required' in result.stderr, result.stderr

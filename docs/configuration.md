@@ -1,24 +1,52 @@
 # Startup options and limits
 
-All Rivet modes use built-in resource limits and environment policies. No startup configuration file is required or loaded. Workspace roots and command permissions are selected at startup.
+Rivet has one runtime command: `rivet session`. No startup configuration file is required or loaded. The current directory is the only workspace root.
 
-Run `rivet --version` to print the binary version and `rivet --help` for the command list. Add `--help` or `-h` after `session`, `serve`, `doctor`, or `commands` to print that command's options.
+Run `rivet --version` to print the binary version, `rivet --help` for the command list, and `rivet session --help` for session options.
 
-## Session scope
+## Session capabilities
 
-Native `rivet session` uses the current directory as its only workspace root. Child commands run inside the OS sandbox, with network access disabled unless `--network` is supplied. See the [security model](security.md).
+Child commands always run inside the native OS sandbox.
 
-For MCP stdio, pass each permitted filesystem root on the command line. Roots must exist; relative paths resolve from the launch directory:
+The operator may grant three capabilities at startup:
 
 ```sh
-rivet serve --root /path/to/project
+rivet session \
+  --allow-command git=git \
+  --pass-env FRED_API_KEY \
+  --network
 ```
 
-Repeat `--root PATH` to allow more than one stdio root. Supply the same roots and command permissions to `doctor` and `commands`. Rivet confines its file operations and command working directories to these roots; stdio mode does not apply the native session's OS sandbox.
+- `--allow-command NAME=EXECUTABLE` registers one executable. Repeat it for additional executables. The executable is resolved at startup.
+- `--pass-env NAME` captures one existing parent environment variable for child commands. Repeat it for additional variables.
+- `--network` enables child network access. Network access is denied by default.
+
+Without `--allow-command` flags, Rivet offers interactive command selection and then asks whether child commands need network access and specific environment variables.
+
+Registering an executable authorizes arbitrary argv for that executable. Rivet passes argv directly to the executable and never inserts a shell. Shell metacharacters therefore remain ordinary argv unless the operator explicitly registers a shell or interpreter and that executable interprets them itself.
+
+## Environment
+
+Child processes start with an empty environment.
+
+Rivet then supplies:
+
+- the startup `PATH` as runtime substrate so registered tools can locate their own child executables;
+- Rivet-owned sandbox variables such as isolated `HOME`, `TMPDIR`, and `CARGO_HOME`, plus platform/toolchain variables required by the native sandbox;
+- only user/application variables selected with `--pass-env NAME`.
+
+`--pass-env` is fail-closed:
+
+- the name must be a valid environment-variable name;
+- duplicate names are rejected;
+- the variable must exist in the parent environment when the session starts;
+- names owned by Rivet such as `PATH`, `HOME`, `TMPDIR`, `CARGO_HOME`, `RUSTUP_HOME`, `DEVELOPER_DIR`, and `SDKROOT` are reserved.
+
+Values are captured once at startup, kept only in memory, and are not printed in the session summary or exposed through MCP metadata.
+
+MCP command requests cannot provide environment overrides.
 
 ## Resource limits
-
-These fixed limits apply to both native sessions and stdio:
 
 | Resource | Limit |
 | --- | ---: |
@@ -31,36 +59,16 @@ These fixed limits apply to both native sessions and stdio:
 | Default command timeout | 120,000 ms (2 minutes) |
 | Maximum command timeout | 1,800,000 ms (30 minutes) |
 
-Completed retained entries do not consume live-process capacity. `run_command` submits a managed process and returns immediately; its missing `timeout_ms` uses the default command timeout. `start_process` keeps stdin available and uses the maximum command timeout when no timeout is supplied. Request-specific timeouts and limits must be positive and cannot exceed their built-in bounds.
+Completed retained entries do not consume live-process capacity. `run_command` submits a managed process and returns immediately. `start_process` keeps stdin available. Request-specific timeouts must be positive and cannot exceed the built-in maximum.
 
-## Environment
+## Startup validation
 
-Child processes start with an empty environment. Stdio mode inherits only `PATH`, `HOME`, `TMPDIR`, and `LANG` from Rivet. Native sessions inherit only `PATH` and `LANG`; the sandbox supplies isolated home and temporary directories and the required toolchain paths.
+Before connecting to the tunnel, Rivet:
 
-In either mode, MCP requests may override only `RUST_LOG`. Environment values cannot contain NUL. Tunnel credentials are not inherited by child commands.
+1. canonicalizes and opens the current workspace;
+2. verifies required workspace access;
+3. resolves every registered executable;
+4. validates and captures each `--pass-env` variable;
+5. verifies that the mandatory native sandbox backend is available.
 
-## Allowed programs
-
-Pass permitted programs at server startup. The command name used by MCP requests is the name before `=`. Restricted commands need one or more allowed first arguments:
-
-```sh
-rivet serve \
-  --root /path/to/project \
-  --allow-command git=git \
-  --allow-subcommand git=status \
-  --allow-subcommand git=diff
-```
-
-Repeat `--allow-command NAME=EXECUTABLE` for each program and `--allow-subcommand NAME=VALUE` for each permitted first argument. `EXECUTABLE` is resolved from `PATH`; a value containing a path separator is treated as a path. `--allow-any-args NAME` explicitly permits any arguments for that command. Stdio mode checks argument paths; native mode relies on the OS sandbox for filesystem access. Allowing a shell or interpreter with unrestricted arguments permits execution of code supplied in those arguments.
-
-Native sessions accept the same command flags and otherwise offer interactive command selection. Rivet passes arguments directly to the executable; it does not invoke a shell or interactive terminal. Setup validates command executables and allows replacing a missing executable before continuing. The final session summary shows resolved commands, allowed first arguments, and child network access after validation. Ctrl+C or EOF cancels setup; hidden credential prompts restore terminal echo before returning. Restart with different flags to change the scope.
-
-## Validate and diagnose
-
-```sh
-rivet doctor --root /path/to/project
-rivet commands --root /path/to/project \
-  --allow-command git=git --allow-subcommand git=status
-```
-
-`doctor` validates roots and command permissions, resolves allowed executables, and checks root access and stdio descriptors. `commands` prints the resolved command paths and argument policy. Native sessions validate their workspace, selected commands, and sandbox before connecting to the tunnel.
+If any required boundary cannot be established, startup fails closed.

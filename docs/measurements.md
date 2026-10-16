@@ -1,48 +1,48 @@
 # Performance measurements
 
-Measure the exact binary you plan to compare. Record the host, Rust toolchain, filesystem, build profile, and command scope with the results.
+Measure the production path: `rivet session -> Secure MCP Tunnel -> MCP dispatch -> native sandbox`. The removed stdio execution mode is not a valid benchmark surrogate.
 
-## Release build
+Record the host, OS version, Rust toolchain, filesystem, workspace, command capabilities, network policy, environment capabilities, build profile, and Git commit with every result.
 
-Build the current source and run the measurement harness:
+## Builds
+
+Release:
 
 ```sh
 cargo build --locked --release
-python3 tests/measure.py target/release/rivet --calls 100000
 ```
 
-The harness reports JSON containing:
-
-- release binary size;
-- MCP initialize latency across 21 fresh server starts;
-- idle RSS and CPU when the host permits process inspection;
-- total and median latency for sequential 1 KiB `read_file` calls;
-- RSS and CPU after the read workload;
-- median `run_command` submission latency across 21 commands.
-
-`run_command` latency measures submission only. The harness waits for each submitted process to complete before starting the next measured submission, so the process-capacity limit does not contaminate the result.
-
-The harness launches `rivet serve` over direct stdio. It does not measure the native tunnel, ChatGPT round trips, or OS-sandboxed command startup.
-
-## Profiling build
-
-The `profiling` Cargo profile keeps release optimization and debug symbols:
+Profiling build:
 
 ```sh
 cargo build --locked --profile profiling
-python3 tests/measure.py target/profiling/rivet --calls 100000 --sample rivet-profile.txt
 ```
 
-On macOS, `--sample PATH` records a five-second CPU sample with the system `sample` command. CPU sampling changes timing, so use an unsampled run for elapsed-time comparisons.
+The `profiling` Cargo profile keeps release optimization and debug symbols.
+
+## Rivet profiling events
+
+Set `RIVET_PROFILE_FILE` on the Rivet process and run a normal session:
+
+```sh
+RIVET_PROFILE_FILE=rivet-profile.jsonl \
+target/profiling/rivet session \
+  --allow-command cargo=cargo
+```
+
+Then execute the same MCP workload through the tunnel for every candidate. Rivet profiling events expose dispatch and process metrics without creating a second execution architecture for measurement.
+
+For command-start measurements, include native sandbox construction and spawn cost. For end-to-end measurements, include tunnel round trips and the actual MCP workload.
 
 ## Comparison rules
 
 For an A/B comparison:
 
-1. use the same machine, OS version, power state, filesystem, workspace, and command scope;
+1. use the same machine, OS version, power state, filesystem, workspace, and capability set;
 2. build both revisions with the same Rust toolchain and Cargo profile;
-3. run the same call count and input files;
-4. compare unsampled wall-clock measurements;
-5. record the exact Git commit and command line beside any published result.
+3. execute the same MCP requests and child commands;
+4. compare the same lifecycle points and units;
+5. distinguish local dispatch/process metrics from end-to-end tunnel latency;
+6. record the exact Git commit and command line beside any published result.
 
-If RSS or CPU inspection is blocked by the host, the harness reports that metric as unavailable instead of substituting an estimate.
+Do not use a local transport or unsandboxed child path to claim production-session performance.

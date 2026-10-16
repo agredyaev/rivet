@@ -109,7 +109,7 @@ The `profiling` Cargo profile keeps release optimization and debug symbols. On m
 
 ```sh
 cargo build --locked --profile profiling
-python3 tests/measure.py target/profiling/rivet --calls 100000 --sample rivet-profile.txt
+RIVET_PROFILE_FILE=rivet-profile.jsonl target/profiling/rivet session --allow-command cargo=cargo
 ```
 
 The measurement script prints JSON with startup latency, idle RSS/CPU when the host permits process inspection, total wall-clock time, and per-call medians. Restricted environments report RSS/CPU as unavailable. CPU sampling adds overhead; compare unsampled runs on the same host when measuring elapsed time. See the [measurement procedure](measurements.md) for the exact workload and comparison rules.

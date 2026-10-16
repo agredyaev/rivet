@@ -1,12 +1,15 @@
 //! Fixed-slot managed child-process runtime.
 //!
 //! The registry is intentionally data-oriented: a fixed 32-slot retention ring stores
-//! process metadata in SoA arrays while at most 10 children may run concurrently. Process state is derived from id + result.
+//! process metadata in SoA arrays while at most 8 children may run concurrently. Process state is derived from id + result.
 //! Captured output buffers are allocated once at startup and reused by slot.
 
 use crate::{
     commands::{CommandRequest, admitted, terminate, terminate_group},
-    config::{CommandId, Config, PROCESS_RETENTION_SLOTS},
+    config::{
+        CommandId, Config, DEFAULT_TIMEOUT_MS, MAX_PROCESS_OUTPUT_BYTES, MAX_RUNNING_PROCESSES,
+        MAX_TIMEOUT_MS, PROCESS_RETENTION_SLOTS,
+    },
     mcp::Fault,
     profile,
 };
@@ -204,9 +207,19 @@ impl Core {
     }
 }
 
+#[derive(Clone, Copy)]
 enum InputMode {
     Closed,
     Piped,
+}
+
+impl InputMode {
+    fn default_timeout_ms(self) -> u64 {
+        match self {
+            Self::Closed => DEFAULT_TIMEOUT_MS,
+            Self::Piped => MAX_TIMEOUT_MS,
+        }
+    }
 }
 
 pub struct ProcessTable {
@@ -218,14 +231,11 @@ pub struct ProcessTable {
 }
 
 impl ProcessTable {
-    pub fn new(config: &Config) -> Self {
+    pub fn new() -> Self {
         let (state_event, _) = watch::channel(());
         Self {
             core: Mutex::new(Core::new()),
-            output: OutputStore::new(
-                config.limits.max_stdout_bytes,
-                config.limits.max_stderr_bytes,
-            ),
+            output: OutputStore::new(MAX_PROCESS_OUTPUT_BYTES, MAX_PROCESS_OUTPUT_BYTES),
             stdin: std::array::from_fn(|_| AsyncMutex::new(None)),
             epoch: Instant::now(),
             state_event,
@@ -354,7 +364,6 @@ impl ProcessTable {
         self: &Arc<Self>,
         config: &Config,
         request: CommandRequest,
-        default_timeout_ms: u64,
         input_mode: InputMode,
     ) -> Result<ProcessId, Fault> {
         let profiling = profile::enabled();
@@ -362,7 +371,8 @@ impl ProcessTable {
         let rss_before_bytes = profile::self_current_rss_bytes();
 
         let admitted_started = profiling.then(Instant::now);
-        let (mut command, timeout_ms, command_id) = admitted(config, &request, default_timeout_ms)?;
+        let (mut command, timeout_ms, command_id) =
+            admitted(config, &request, input_mode.default_timeout_ms())?;
         let admitted_us = admitted_started
             .as_ref()
             .map(|started| started.elapsed().as_micros());
@@ -371,7 +381,7 @@ impl ProcessTable {
         }
 
         let registry_started = profiling.then(Instant::now);
-        let (id, slot) = self.reserve_slot(config.limits.max_running_processes, command_id)?;
+        let (id, slot) = self.reserve_slot(MAX_RUNNING_PROCESSES, command_id)?;
         let registry_us = registry_started
             .as_ref()
             .map(|started| started.elapsed().as_micros());
@@ -564,14 +574,7 @@ impl ProcessTable {
         config: &Config,
         request: CommandRequest,
     ) -> Result<serde_json::Value, Fault> {
-        let id = self
-            .spawn(
-                config,
-                request,
-                config.limits.default_timeout_ms,
-                InputMode::Closed,
-            )
-            .await?;
+        let id = self.spawn(config, request, InputMode::Closed).await?;
         Ok(json!({"process_id": id.0}))
     }
 
@@ -580,14 +583,7 @@ impl ProcessTable {
         config: &Config,
         request: CommandRequest,
     ) -> Result<serde_json::Value, Fault> {
-        let id = self
-            .spawn(
-                config,
-                request,
-                config.limits.max_timeout_ms,
-                InputMode::Piped,
-            )
-            .await?;
+        let id = self.spawn(config, request, InputMode::Piped).await?;
         Ok(json!({"process_id": id.0}))
     }
 

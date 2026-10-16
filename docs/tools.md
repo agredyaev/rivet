@@ -1,11 +1,11 @@
 # MCP tools
 
-Rivet exposes these tools through both the native tunnel and MCP stdio. Paths and command working directories must be absolute and within one of the roots returned by `list_roots`. All modes use the [built-in limits](configuration.md#resource-limits).
+Rivet exposes these tools through the native Secure MCP Tunnel. Paths and command working directories must be absolute and within the single workspace returned by `list_roots`. The [built-in limits](configuration.md#resource-limits) apply to every request.
 
 | Tool | Purpose |
 | --- | --- |
 | `list_roots` | Return the filesystem roots selected at startup. |
-| `list_commands` | Return registered commands and their argument policy. |
+| `list_commands` | Return registered command names and resolved executable paths. |
 | `run_command` | Submit a registered command and return its managed process ID immediately. |
 | `run_commands` | Submit 1–8 independent registered commands in one MCP request. |
 | `start_process` | Start an interactive registered process with stdin available. |
@@ -21,7 +21,7 @@ Rivet exposes these tools through both the native tunnel and MCP stdio. Paths an
 
 ## Commands
 
-`run_command` and `start_process` accept `command`, `args`, `cwd`, optional `timeout_ms`, and optional environment overrides in `env`. The command name must be registered. Restricted commands authorize the first argument using `allowed_subcommands`.
+`run_command` and `start_process` accept `command`, `args`, `cwd`, and optional `timeout_ms`. The command name must be registered at session startup. Rivet treats `args` as opaque argv and does not interpret a first argument or shell syntax. MCP requests cannot inject environment variables.
 
 `run_command` never waits for the executable to finish. It returns:
 
@@ -87,4 +87,4 @@ Process state exists only while the Rivet server is running. The server accepts 
 
 `replace_text` accepts `path`, `old`, `new`, `expected_occurrences`, and optional `expected_sha256`. The file is changed only when the number of exact matches equals `expected_occurrences` and the optional hash matches.
 
-Tool errors include a `code`, a human-readable `message`, and a `details` object (empty when no extra details apply). The implementation returns `INVALID_REQUEST`, `PATH_DENIED`, `COMMAND_NOT_FOUND`, `COMMAND_DENIED`, `SUBCOMMAND_DENIED`, `COMMAND_TIMEOUT`, `PROCESS_NOT_FOUND`, `PROCESS_LIMIT`, `OUTPUT_LIMIT`, `FILE_CHANGED`, `IO_ERROR`, `SPAWN_ERROR`, or `SANDBOX_ERROR`. Root and command-scope construction failures print `STARTUP_ERROR` to stderr; CLI parsing and later runtime errors have their own messages.
+Tool errors include a `code`, a human-readable `message`, and a `details` object (empty when no extra details apply). The implementation returns `INVALID_REQUEST`, `PATH_DENIED`, `COMMAND_NOT_FOUND`, `COMMAND_TIMEOUT`, `PROCESS_NOT_FOUND`, `PROCESS_LIMIT`, `OUTPUT_LIMIT`, `FILE_CHANGED`, `IO_ERROR`, `SPAWN_ERROR`, or `SANDBOX_ERROR`. Root and command-scope construction failures print `STARTUP_ERROR` to stderr; CLI parsing and later runtime errors have their own messages.

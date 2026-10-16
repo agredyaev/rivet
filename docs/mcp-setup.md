@@ -70,7 +70,7 @@ rivet session
 
 Here `rivet` means the binary on `PATH` or its absolute path. The installer starts it directly without adding it to `PATH`; for manual downloads, use the extracted package's absolute `bin/rivet` path.
 
-Rivet prints the workspace root, command names, executable paths, and allowed first arguments. The built-in selector offers `uv`, `mkdir`, `rg`, `make`, restricted `git`, and restricted `cargo`; custom commands can be added explicitly.
+Rivet prints the workspace root, command names, resolved executable paths, child network policy, and selected environment-variable names. The built-in selector offers `uv`, `mkdir`, `rg`, `git`, `cargo`, and `make`; custom commands can be added explicitly. Interactive setup also asks whether child commands need network access and specific parent environment variables.
 
 Rivet then asks for:
 
@@ -95,11 +95,9 @@ export CONTROL_PLANE_API_KEY="sk-..."
 
 rivet session \
   --allow-command git=git \
-  --allow-subcommand git=status \
-  --allow-subcommand git=diff \
   --allow-command cargo=cargo \
-  --allow-subcommand cargo=check \
-  --allow-subcommand cargo=test
+  --pass-env FRED_API_KEY \
+  --network
 ```
 
 To keep the real values out of shell history, read them without terminal echo and then export them. The following uses Bash's `read` options; run `bash` first if your shell is zsh:
@@ -110,7 +108,7 @@ export CONTROL_PLANE_TUNNEL_ID
 read -rsp "Runtime API key: " CONTROL_PLANE_API_KEY; echo
 export CONTROL_PLANE_API_KEY
 
-rivet session --allow-command git=git --allow-subcommand git=status
+rivet session --allow-command git=git
 ```
 
 Environment assignments can also be scoped to one Rivet invocation:
@@ -119,9 +117,7 @@ Environment assignments can also be scoped to one Rivet invocation:
 CONTROL_PLANE_TUNNEL_ID="tunnel_0123456789abcdef0123456789abcdef" \
 CONTROL_PLANE_API_KEY="sk-..." \
 rivet session \
-  --allow-command git=git \
-  --allow-subcommand git=status \
-  --allow-subcommand git=diff
+  --allow-command git=git
 ```
 
 Do not paste a real runtime API key into a command that your shell records in history.
@@ -134,8 +130,8 @@ Production uses `https://api.openai.com`. A different `CONTROL_PLANE_BASE_URL` i
 
 1. canonicalizes the current directory as the single workspace root;
 2. collects or accepts the command allowlist;
-3. builds resource and environment policy from embedded defaults;
-4. validates the workspace and mandatory OS sandbox;
+3. captures explicit `--pass-env` values and the network capability;
+4. validates the workspace, registered executables, and mandatory OS sandbox;
 5. constructs the MCP runtime in the same process;
 6. opens the OpenAI tunnel control-plane connection;
 7. polls `/v1/tunnels/{tunnel_id}/poll`;
@@ -188,8 +184,7 @@ The direct transport:
 
 - **Authentication or authorization failure:** verify the runtime API key and tunnel permissions.
 - **Invalid tunnel ID:** use the tunnel ID created in OpenAI Platform.
-- **`STARTUP_ERROR`:** validate the current workspace and allowed executables.
-- **`DOCTOR_ERROR`:** check workspace read/write/search access and available stdio descriptors.
+- **`STARTUP_ERROR`:** validate the current workspace, registered executables, and requested `--pass-env` variables.
 - **Tunnel missing in ChatGPT:** check its target workspace association and your **Tunnels Read + Use** permission.
 - **`SANDBOX_ERROR`:** macOS requires the built-in Seatbelt backend; Linux/WSL2 requires `bubblewrap`. On Ubuntu 24.04, install `apparmor-profiles`, copy `bwrap-userns-restrict` from `/usr/share/apparmor/extra-profiles/` to `/etc/apparmor.d/`, and load it with `apparmor_parser -r`.
 - **`COMMAND_NOT_FOUND`:** restart the session with that command explicitly allowed.
