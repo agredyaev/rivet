@@ -495,7 +495,8 @@ mod direct_tests {
             std::process::id()
         ));
         fs::create_dir(&root).unwrap();
-        let config = Config::new(root.clone(), BTreeMap::new(), Vec::new(), false).unwrap();
+        let config = Config::new(root, BTreeMap::new(), Vec::new(), false).unwrap();
+        let root = config.root.path.clone();
         (Arc::new(config), root)
     }
 

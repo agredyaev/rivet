@@ -1133,10 +1133,11 @@ mod tests {
         let root =
             env::temp_dir().join(format!("rivet-tunnel-test-{}-{nonce}", std::process::id()));
         fs::create_dir(&root).unwrap();
+        let config = Config::new(root, BTreeMap::new(), Vec::new(), false).unwrap();
+        let root = config.root.path.clone();
         let target = root.join("state.txt");
         fs::write(&target, "before").unwrap();
 
-        let config = Config::new(root.clone(), BTreeMap::new(), Vec::new(), false).unwrap();
         let runtime = Arc::new(Rivet::new(Arc::new(config)));
         let mut server = MockServer::start(poll_body(&target));
         let client = Client::new(
