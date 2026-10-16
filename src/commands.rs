@@ -3,7 +3,7 @@
 //! This module applies command, path, environment, and timeout policy before a
 //! managed child starts. Arguments go directly to the configured executable.
 use crate::{
-    config::{CommandId, Config},
+    config::{CommandId, Config, MAX_TIMEOUT_MS},
     mcp::Fault,
     sandbox,
 };
@@ -41,7 +41,7 @@ pub fn admitted(
         ));
     }
     let timeout_ms = request.timeout_ms.unwrap_or(default_timeout);
-    if !timeout_valid(timeout_ms, config.limits.max_timeout_ms) {
+    if !timeout_valid(timeout_ms, MAX_TIMEOUT_MS) {
         return Err(Fault::new(
             "INVALID_REQUEST",
             "timeout_ms is outside built-in limits",

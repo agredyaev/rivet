@@ -14,31 +14,23 @@ use std::{
 };
 
 pub const PROCESS_RETENTION_SLOTS: usize = 32;
-pub const MAX_RUNNING_PROCESSES: usize = 10;
+pub const MAX_RUNNING_PROCESSES: usize = 8;
+pub const MAX_PROCESS_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
+pub const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_DIRECTORY_ENTRIES: usize = 1000;
+pub const DEFAULT_TIMEOUT_MS: u64 = 120_000;
+pub const MAX_TIMEOUT_MS: u64 = 1_800_000;
 
-pub struct Limits {
-    pub max_stdout_bytes: usize,
-    pub max_stderr_bytes: usize,
-    pub max_file_read_bytes: usize,
-    pub max_directory_entries: usize,
-    pub max_running_processes: usize,
-    pub default_timeout_ms: u64,
-    pub max_timeout_ms: u64,
-}
-
-impl Default for Limits {
-    fn default() -> Self {
-        Self {
-            max_stdout_bytes: 2 * 1024 * 1024,
-            max_stderr_bytes: 2 * 1024 * 1024,
-            max_file_read_bytes: 4 * 1024 * 1024,
-            max_directory_entries: 1000,
-            max_running_processes: 8,
-            default_timeout_ms: 120_000,
-            max_timeout_ms: 1_800_000,
-        }
-    }
-}
+const _: () = {
+    assert!(PROCESS_RETENTION_SLOTS > 0);
+    assert!(MAX_RUNNING_PROCESSES > 0 && MAX_RUNNING_PROCESSES <= PROCESS_RETENTION_SLOTS);
+    assert!(MAX_PROCESS_OUTPUT_BYTES > 0);
+    assert!(MAX_TEXT_BYTES > 0 && MAX_TEXT_BYTES <= 64 * 1024 * 1024);
+    assert!(MAX_DIRECTORY_ENTRIES > 0);
+    assert!(DEFAULT_TIMEOUT_MS > 0);
+    assert!(MAX_TIMEOUT_MS > 0 && MAX_TIMEOUT_MS <= u32::MAX as u64);
+    assert!(DEFAULT_TIMEOUT_MS <= MAX_TIMEOUT_MS);
+};
 
 pub struct Root {
     pub path: PathBuf,
@@ -60,7 +52,6 @@ pub struct CommandEntry {
 
 pub struct Config {
     pub root: Root,
-    pub limits: Limits,
     pub commands: Box<[CommandEntry]>,
     pub pass_env: Box<[(String, OsString)]>,
     pub runtime_path: Option<OsString>,
@@ -160,22 +151,6 @@ impl Config {
         pass_env_names: Vec<String>,
         network: bool,
     ) -> Result<Self, String> {
-        let limits = Limits::default();
-        if limits.max_stdout_bytes == 0
-            || limits.max_stderr_bytes == 0
-            || limits.max_file_read_bytes == 0
-            || limits.max_file_read_bytes > 64 * 1024 * 1024
-            || limits.max_directory_entries == 0
-            || limits.max_running_processes == 0
-            || limits.max_running_processes > MAX_RUNNING_PROCESSES
-            || limits.default_timeout_ms == 0
-            || limits.max_timeout_ms == 0
-            || limits.max_timeout_ms > u32::MAX as u64
-            || limits.default_timeout_ms > limits.max_timeout_ms
-        {
-            return Err("embedded limits are invalid".into());
-        }
-
         let root = root(workspace)?;
 
         if command_specs.len() > u16::MAX as usize + 1 {
@@ -210,7 +185,6 @@ impl Config {
 
         Ok(Self {
             root,
-            limits,
             commands: commands.into_boxed_slice(),
             pass_env: pass_env.into_boxed_slice(),
             runtime_path: env::var_os("PATH"),

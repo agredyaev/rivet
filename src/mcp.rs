@@ -1,5 +1,11 @@
 //! MCP tool request routing for the native tunnel runtime.
-use crate::{commands::CommandRequest, config::Config, filesystem, process::ProcessTable, profile};
+use crate::{
+    commands::CommandRequest,
+    config::{Config, DEFAULT_TIMEOUT_MS, MAX_PROCESS_OUTPUT_BYTES, MAX_TEXT_BYTES},
+    filesystem,
+    process::ProcessTable,
+    profile,
+};
 use rivet::mcp_wire::decode_client_message;
 use rmcp::{
     RoleServer,
@@ -74,7 +80,7 @@ pub(crate) enum Dispatch {
 
 impl Rivet {
     pub(crate) fn new(config: Arc<Config>) -> Self {
-        let processes = Arc::new(ProcessTable::new(&config));
+        let processes = Arc::new(ProcessTable::new());
         Self {
             config,
             processes,
@@ -310,11 +316,7 @@ impl Rivet {
         &self,
         Parameters(request): Parameters<ProcessOutputRequest>,
     ) -> CallToolResult {
-        let max = self
-            .config
-            .limits
-            .max_stdout_bytes
-            .max(self.config.limits.max_stderr_bytes);
+        let max = MAX_PROCESS_OUTPUT_BYTES;
         result(self.processes.read(
             request.process_id,
             request.stdout_offset.unwrap_or(0),
@@ -334,8 +336,8 @@ impl Rivet {
                 .input(
                     request.process_id,
                     &request.text,
-                    self.config.limits.max_file_read_bytes,
-                    self.config.limits.default_timeout_ms,
+                    MAX_TEXT_BYTES,
+                    DEFAULT_TIMEOUT_MS,
                 )
                 .await,
         )
@@ -387,7 +389,7 @@ impl Rivet {
             )));
         }
 
-        let max_total = self.config.limits.max_file_read_bytes;
+        let max_total = MAX_TEXT_BYTES;
         let total_limit = request.files.iter().try_fold(0_usize, |total, request| {
             total.checked_add(request.limit.unwrap_or(max_total))
         });

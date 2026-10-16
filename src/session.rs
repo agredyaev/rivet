@@ -235,12 +235,11 @@ fn print_scope<W: Write>(output: &mut W, config: &Config, color: bool) -> io::Re
     Ok(())
 }
 
-type ParsedArgs = (BTreeMap<String, String>, Vec<String>, bool, bool);
+type ParsedArgs = (BTreeMap<String, String>, Vec<String>, bool);
 
 fn parse_args(args: Vec<String>) -> Result<ParsedArgs, String> {
     let mut commands = BTreeMap::new();
     let mut pass_env = Vec::new();
-    let mut has_command_flags = false;
     let mut network = false;
     let mut iter = args.into_iter();
 
@@ -248,7 +247,6 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs, String> {
         match arg.as_str() {
             "--network" => network = true,
             "--allow-command" => {
-                has_command_flags = true;
                 let value = iter.next().ok_or("--allow-command requires NAME=VALUE")?;
                 let (name, executable) = crate::assignment("--allow-command", &value)?;
                 if commands
@@ -265,7 +263,7 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs, String> {
         }
     }
 
-    Ok((commands, pass_env, has_command_flags, network))
+    Ok((commands, pass_env, network))
 }
 
 pub async fn run(args: Vec<String>) -> ExitCode {
@@ -274,7 +272,7 @@ pub async fn run(args: Vec<String>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let (mut commands, mut pass_env, has_command_flags, mut network) = match parse_args(args) {
+    let (mut commands, mut pass_env, mut network) = match parse_args(args) {
         Ok(parsed) => parsed,
         Err(error) => {
             eprintln!("{error}");
@@ -291,7 +289,7 @@ pub async fn run(args: Vec<String>) -> ExitCode {
     };
 
     let color = io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
-    if !has_command_flags {
+    if commands.is_empty() {
         let mut input = io::stdin().lock();
         let mut output = io::stdout().lock();
         commands = match collect_commands(&mut input, &mut output, &cwd, color) {
@@ -399,7 +397,7 @@ mod tests {
 
     #[test]
     fn args_have_one_command_policy_and_explicit_env_names() {
-        let (commands, pass_env, supplied, network) = parse_args(vec![
+        let (commands, pass_env, network) = parse_args(vec![
             "--network".into(),
             "--allow-command".into(),
             "shell=/bin/sh".into(),
@@ -409,7 +407,6 @@ mod tests {
         .unwrap();
         assert_eq!(commands.get("shell").map(String::as_str), Some("/bin/sh"));
         assert_eq!(pass_env, ["TOKEN"]);
-        assert!(supplied);
         assert!(network);
 
         let error = parse_args(vec!["--allow-subcommand".into(), "shell=-c".into()])
