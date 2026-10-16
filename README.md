@@ -3,76 +3,57 @@
 [![CI](https://img.shields.io/github/actions/workflow/status/agredyaev/rivet/ci.yml?branch=main&style=flat-square&label=CI)](https://github.com/agredyaev/rivet/actions/workflows/ci.yml)
 [![Release](https://img.shields.io/github/v/release/agredyaev/rivet?style=flat-square)](https://github.com/agredyaev/rivet/releases/latest)
 
-Rivet is an MCP server that connects to ChatGPT through OpenAI Secure MCP Tunnel over outbound HTTPS.
-
-This documentation describes the current source. For changes that have not been released yet, use the source build below; the installer downloads a published release.
-
-It runs commands selected at startup, reads and writes workspace files, and tracks up to 8 running child processes and 32 retained process entries.
+Rivet connects ChatGPT to one local workspace through OpenAI Secure MCP Tunnel over outbound HTTPS. It exposes filesystem tools and explicitly selected executables. Child commands always run inside the native OS sandbox.
 
 Rivet does not listen on a network port.
 
 ## Quick start
 
-Run the installer in an interactive terminal from the workspace Rivet should access.
-
-macOS arm64 / Linux x64 or arm64:
+Run the installer from the workspace Rivet should access:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/agredyaev/rivet/main/scripts/install.sh | bash
 ```
 
-Windows is supported through WSL2. Install and run the Linux build from a WSL2 project directory; native Windows binaries are not shipped. Linux/WSL2 requires the `bubblewrap` package; Ubuntu 24.04 also requires the `bwrap-userns-restrict` AppArmor profile from `apparmor-profiles`. macOS uses the built-in Seatbelt sandbox.
+Windows is supported through WSL2. Linux/WSL2 requires `bubblewrap`; Ubuntu 24.04 also requires the `bwrap-userns-restrict` AppArmor profile from `apparmor-profiles`. macOS uses the built-in Seatbelt sandbox.
 
-The installer reads the release version recorded on `main`, verifies the archive checksum, installs under `~/.local/share/rivet` by default, and starts `rivet session`. It refuses to fall back to an older release when the recorded version is unavailable. It does not add `rivet` to `PATH`.
+The installer verifies the published release, installs Rivet under `~/.local/share/rivet` by default, and starts `rivet session`.
 
-During session setup, Rivet:
-1. asks which commands to allow;
-2. asks for the OpenAI tunnel ID and runtime API key with terminal echo disabled;
-3. starts the native outbound HTTPS tunnel for the current directory and selected command scope.
+Interactive setup:
+1. select built-in or custom executables;
+2. choose whether child commands need network access, for example for package or dependency downloads;
+3. choose whether child commands need specific parent environment variables such as API keys or tokens;
+4. enter the OpenAI tunnel ID and runtime API key with terminal echo disabled;
+5. start the outbound HTTPS tunnel for the current workspace.
 
-Create the tunnel in [OpenAI Platform tunnel settings](https://platform.openai.com/settings/organization/tunnels) and create the runtime API key in [OpenAI Platform API keys](https://platform.openai.com/api-keys). Rivet does not save either value. The native tunnel keeps session scope only in memory.
+Environment-variable values are never printed or saved. Rivet captures only variables explicitly selected with `--pass-env`; `PATH` is retained as the runtime executable-search substrate.
 
-Built-in command presets:
-- `uv`, `mkdir`, `rg`, `make`: any arguments;
-- `git`: `status`, `diff`, `log`, `show`, `add`, `commit`, `rev-parse`, `ls-files`;
-- `cargo`: `check`, `test`, `fmt`, `clippy`, `metadata`, `build`.
-
-Custom commands can be added during setup with either unrestricted arguments or an allowed set of first arguments.
+Built-in command choices are `uv`, `mkdir`, `rg`, `git`, `cargo`, and `make`. Registering an executable authorizes that executable; Rivet passes its argv directly without interpreting shell syntax.
 
 ## Manual run
 
-Download the archive for your platform from [GitHub Releases](https://github.com/agredyaev/rivet/releases/latest) and extract it. New archive names include the version, for example `rivet-v0.3.0-linux-x64.zip`. The installer also accepts the previous archive name within the same release tag.
-
-Start the session from the workspace directory:
-
-macOS arm64 / Linux x64 or arm64:
+Download the archive for your platform from [GitHub Releases](https://github.com/agredyaev/rivet/releases/latest), extract it, and start Rivet from the workspace:
 
 ```sh
 cd /path/to/project
 /absolute/path/to/extracted-package/bin/rivet session
 ```
 
-The current directory is always the native session workspace. Child network access is disabled by default; add `--network` when builds need to download dependencies. Command scope can still be supplied non-interactively:
+The current directory is the only workspace root. Child network access is disabled by default.
+
+A non-interactive example:
 
 ```sh
 /absolute/path/to/extracted-package/bin/rivet session \
+  --network \
+  --pass-env FRED_API_KEY \
+  --allow-command uv=uv \
   --allow-command git=git \
-  --allow-subcommand git=status \
-  --allow-subcommand git=diff
+  --allow-command cargo=cargo \
+  --allow-command make=make
 ```
 
-## Direct stdio server
-
-If the MCP host starts Rivet directly instead of using `rivet session`:
-
-```sh
-/absolute/path/to/extracted-package/bin/rivet serve --root /path/to/project \
-  --allow-command git=git \
-  --allow-subcommand git=status \
-  --allow-subcommand git=diff
-```
-
-`rivet session` uses the current directory as its only workspace root. All modes use built-in resource limits and environment policies. For stdio mode, pass each workspace root with `--root`; repeat root and command flags to extend the scope.
+`--allow-command NAME=EXECUTABLE`, `--pass-env NAME`, and `--network` are startup capabilities. MCP requests cannot add executables, environment variables, filesystem roots, or network access.
 
 See [MCP setup](docs/mcp-setup.md) for Secure MCP Tunnel configuration.
 
@@ -87,7 +68,7 @@ See [MCP setup](docs/mcp-setup.md) for Secure MCP Tunnel configuration.
 
 ## Build from source
 
-Use the stable Rust toolchain. CI installs stable Rust.
+Use the stable Rust toolchain:
 
 ```sh
 git clone https://github.com/agredyaev/rivet.git
@@ -95,6 +76,6 @@ cd rivet
 cargo build --locked --release
 ```
 
-From the checkout, run `target/release/rivet --help`, `target/release/rivet serve --help`, or `target/release/rivet session --help` for CLI details. Other examples use `rivet` as shorthand for the binary's absolute path or a binary already on `PATH`.
+Run `target/release/rivet --help` or `target/release/rivet session --help` for CLI details.
 
 Rivet is licensed under [MIT](LICENSE).

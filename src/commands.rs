@@ -1,5 +1,5 @@
 //! Command admission and process-tree termination.
-//!
+//
 //! This module applies command, path, environment, and timeout policy before a
 //! managed child starts. Arguments go directly to the configured executable.
 use crate::{
@@ -8,10 +8,10 @@ use crate::{
     sandbox,
 };
 use cap_std::fs::Dir;
-use rivet::command_policy::{arguments_valid, subcommand_allowed, timeout_valid};
+use rivet::command_policy::{arguments_valid, timeout_valid};
 use serde::Deserialize;
 use serde_json::json;
-use std::{collections::BTreeMap, fs, io, path::Path, process::Stdio};
+use std::{fs, io, path::Path, process::Stdio};
 use std::{os::fd::AsRawFd, os::unix::process::CommandExt};
 use tokio::process::{Child, Command};
 use tokio::time::Duration;
@@ -24,68 +24,6 @@ pub struct CommandRequest {
     pub args: Vec<String>,
     pub cwd: String,
     pub timeout_ms: Option<u64>,
-    #[serde(default)]
-    pub env: BTreeMap<String, String>,
-}
-
-fn check_argument_path(config: &Config, cwd: &Path, argument: &str) -> Result<(), Fault> {
-    let denied = || {
-        Fault::with(
-            "PATH_DENIED",
-            "command argument path is outside allowed roots or cannot be checked",
-            json!({"argument": argument}),
-        )
-    };
-    for value in [
-        Some(argument),
-        argument.split_once('=').map(|(_, value)| value),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        let value = if value.starts_with('-')
-            && !value.starts_with("--")
-            && value.get(2..).is_some_and(|path| {
-                path.starts_with('/') || path.starts_with("./") || path.starts_with("../")
-            }) {
-            &value[2..]
-        } else if let Some(path) = value.strip_prefix('@') {
-            path
-        } else {
-            value
-        };
-        let path = Path::new(value);
-        let mut candidate = if path.is_absolute() {
-            path.to_path_buf()
-        } else {
-            cwd.join(path)
-        };
-        let mut missing = Vec::new();
-        let resolved = loop {
-            match fs::canonicalize(&candidate) {
-                Ok(mut resolved) => {
-                    for name in missing.iter().rev() {
-                        resolved.push(name);
-                    }
-                    break resolved;
-                }
-                Err(error) if error.kind() == io::ErrorKind::NotFound => {
-                    if fs::symlink_metadata(&candidate)
-                        .is_ok_and(|meta| meta.file_type().is_symlink())
-                    {
-                        return Err(denied());
-                    }
-                    missing.push(candidate.file_name().ok_or_else(denied)?.to_os_string());
-                    candidate.pop();
-                }
-                Err(_) => return Err(denied()),
-            }
-        };
-        if config.root_for(&resolved).is_none() {
-            return Err(denied());
-        }
-    }
-    Ok(())
 }
 
 pub fn admitted(
@@ -96,13 +34,6 @@ pub fn admitted(
     let (command_id, entry) = config
         .command(&request.command)
         .ok_or_else(|| Fault::new("COMMAND_NOT_FOUND", "command is not registered"))?;
-    if !subcommand_allowed(entry.allowed_subcommands.as_deref(), &request.args) {
-        return Err(Fault::with(
-            "SUBCOMMAND_DENIED",
-            "subcommand is not allowed",
-            json!({"command": request.command, "subcommand": request.args.first()}),
-        ));
-    }
     if !arguments_valid(&request.args) {
         return Err(Fault::new(
             "INVALID_REQUEST",
@@ -132,66 +63,33 @@ pub fn admitted(
         .map_err(|_| Fault::new("PATH_DENIED", "cwd is unavailable or escapes allowed roots"))?;
     let canonical_cwd = fs::canonicalize(&request.cwd)
         .map_err(|_| Fault::new("PATH_DENIED", "cwd cannot be checked"))?;
-    if !config.sandbox_commands {
-        for argument in &request.args {
-            check_argument_path(config, &canonical_cwd, argument)?;
-        }
-    }
-
-    let mut command = if config.sandbox_commands {
-        let workspace = config
-            .roots
-            .first()
-            .ok_or_else(|| Fault::new("SANDBOX_ERROR", "sandbox workspace is unavailable"))?;
-        sandbox::command(
-            &entry.path,
-            &request.args,
-            &workspace.path,
-            &canonical_cwd,
-            config.sandbox_network,
+    let mut command = sandbox::command(
+        &entry.path,
+        &request.args,
+        &config.root.path,
+        &canonical_cwd,
+        config.network,
+    )
+    .map_err(|error| {
+        Fault::with(
+            "SANDBOX_ERROR",
+            "failed to prepare sandbox",
+            json!({"error": error}),
         )
-        .map_err(|error| {
-            Fault::with(
-                "SANDBOX_ERROR",
-                "failed to prepare sandbox",
-                json!({"error": error}),
-            )
-        })?
-    } else {
-        let mut command = std::process::Command::new(&entry.path);
-        command.args(&request.args);
-        command
-    };
+    })?;
     command
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::piped());
 
     command.env_clear();
-    for name in &config.environment.pass {
-        if let Some(value) = std::env::var_os(name) {
-            command.env(name, value);
-        }
+    if let Some(path) = &config.runtime_path {
+        command.env("PATH", path);
     }
-    for (name, value) in &request.env {
-        if !config.environment.allow_override.contains(name) {
-            return Err(Fault::with(
-                "COMMAND_DENIED",
-                "environment override is not allowed",
-                json!({"name": name}),
-            ));
-        }
-        if value.contains('\0') {
-            return Err(Fault::new(
-                "INVALID_REQUEST",
-                "environment value contains NUL",
-            ));
-        }
+    for (name, value) in &config.pass_env {
         command.env(name, value);
     }
-    if config.sandbox_commands {
-        sandbox::apply_environment(&mut command, &config.roots[0].path);
-    }
+    sandbox::apply_environment(&mut command, &config.root.path);
 
     command.process_group(0);
     unsafe {

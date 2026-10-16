@@ -1,11 +1,8 @@
-//! MCP stdio adapter and tool request routing.
-//!
-//! Handlers delegate command, filesystem, and process policy to their modules
-//! and convert the results into MCP responses.
+//! MCP tool request routing for the native tunnel runtime.
 use crate::{commands::CommandRequest, config::Config, filesystem, process::ProcessTable, profile};
 use rivet::mcp_wire::decode_client_message;
 use rmcp::{
-    RoleServer, ServiceExt,
+    RoleServer,
     handler::server::router::tool::ToolRouter,
     handler::server::wrapper::Parameters,
     model::{
@@ -20,13 +17,9 @@ use rmcp::{
 use serde::{Deserialize, Serialize};
 use serde_json::{Value, json, value::RawValue};
 use std::{
-    io,
-    pin::Pin,
     sync::{Arc, LazyLock, Mutex},
-    task::{Context, Poll},
     time::Instant,
 };
-use tokio::io::{AsyncRead, ReadBuf};
 
 #[derive(Debug, Serialize)]
 pub struct Fault {
@@ -232,26 +225,22 @@ struct ProcessStopRequest {
 impl Rivet {
     #[tool(description = "List effective allowed roots for file paths and command cwd")]
     fn list_roots(&self) -> CallToolResult {
-        let roots: Vec<_> = self
-            .config
-            .roots
-            .iter()
-            .map(|root| root.path.display().to_string())
-            .collect();
-        result(Ok(json!({"roots": roots})))
+        result(Ok(
+            json!({"roots": [self.config.root.path.display().to_string()]}),
+        ))
     }
 
-    #[tool(description = "List registered commands and their argument authorization")]
+    #[tool(description = "List registered command names and resolved executables")]
     fn list_commands(&self) -> CallToolResult {
         let commands: Vec<_> = self
             .config
             .commands
             .iter()
-            .map(|entry| match &entry.allowed_subcommands {
-                None => json!({"name": entry.name, "allow_any_args": true}),
-                Some(allowed_subcommands) => {
-                    json!({"name": entry.name, "allowed_subcommands": allowed_subcommands})
-                }
+            .map(|entry| {
+                json!({
+                    "name": entry.name,
+                    "executable": entry.path.display().to_string()
+                })
             })
             .collect();
         result(Ok(json!({"commands": commands})))
@@ -473,7 +462,7 @@ impl rmcp::ServerHandler for Rivet {
                 Implementation::new("rivet", env!("CARGO_PKG_VERSION"))
                     .with_title("Rivet")
                     .with_description(
-                        "Local MCP server for configured commands and allowed filesystem roots.",
+                        "Local MCP server for registered commands and the current workspace.",
                     )
                     .with_website_url("https://github.com/agredyaev/rivet"),
             )
@@ -481,77 +470,9 @@ impl rmcp::ServerHandler for Rivet {
     }
 }
 
-struct LineLimited<R> {
-    inner: R,
-    bytes: usize,
-    cap: usize,
-}
-impl<R: AsyncRead + Unpin> AsyncRead for LineLimited<R> {
-    fn poll_read(
-        mut self: Pin<&mut Self>,
-        cx: &mut Context<'_>,
-        output: &mut ReadBuf<'_>,
-    ) -> Poll<io::Result<()>> {
-        if output.remaining() == 0 {
-            return Poll::Ready(Ok(()));
-        }
-        let mut chunk = [0_u8; 8192];
-        let size = chunk
-            .len()
-            .min(output.remaining())
-            .min(self.cap.saturating_sub(self.bytes).saturating_add(1));
-        let mut input = ReadBuf::new(&mut chunk[..size]);
-        match Pin::new(&mut self.inner).poll_read(cx, &mut input) {
-            Poll::Pending => Poll::Pending,
-            Poll::Ready(Err(error)) => Poll::Ready(Err(error)),
-            Poll::Ready(Ok(())) => {
-                let read = input.filled();
-                for byte in read {
-                    self.bytes += 1;
-                    if self.bytes > self.cap {
-                        return Poll::Ready(Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            "MCP input line exceeds configured cap",
-                        )));
-                    }
-                    if *byte == b'\n' {
-                        self.bytes = 0;
-                    }
-                }
-                output.put_slice(read);
-                Poll::Ready(Ok(()))
-            }
-        }
-    }
-}
-
-pub async fn serve(config: Arc<Config>) -> Result<(), String> {
-    let runtime = Rivet::new(config.clone());
-    let processes = runtime.processes.clone();
-    let cap = config
-        .limits
-        .max_file_read_bytes
-        .saturating_mul(6)
-        .saturating_add(1_048_576)
-        .min(64 * 1024 * 1024);
-    let input = LineLimited {
-        inner: tokio::io::stdin(),
-        bytes: 0,
-        cap,
-    };
-    let service = runtime
-        .serve((input, tokio::io::stdout()))
-        .await
-        .map_err(|e| e.to_string())?;
-    let ended = service.waiting().await.map_err(|e| e.to_string());
-    processes.shutdown().await;
-    ended.map(|_| ())
-}
-
 #[cfg(test)]
 mod direct_tests {
     use super::*;
-    use crate::config::CommandConfig;
     use std::{
         collections::BTreeMap,
         fs,
@@ -572,8 +493,7 @@ mod direct_tests {
             std::process::id()
         ));
         fs::create_dir(&root).unwrap();
-        let config =
-            Config::new(vec![root.clone()], BTreeMap::<String, CommandConfig>::new()).unwrap();
+        let config = Config::new(root.clone(), BTreeMap::new(), Vec::new(), false).unwrap();
         (Arc::new(config), root)
     }
 

@@ -1136,7 +1136,7 @@ mod tests {
         let target = root.join("state.txt");
         fs::write(&target, "before").unwrap();
 
-        let config = Config::native_session(vec![root.clone()], BTreeMap::new(), false).unwrap();
+        let config = Config::new(root.clone(), BTreeMap::new(), Vec::new(), false).unwrap();
         let runtime = Arc::new(Rivet::new(Arc::new(config)));
         let mut server = MockServer::start(poll_body(&target));
         let client = Client::new(

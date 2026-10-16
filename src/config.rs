@@ -1,12 +1,15 @@
 //! Embedded defaults and startup scope validation.
 //!
-//! Executables are resolved once, and allowed roots are kept open as directory
-//! capabilities so filesystem operations can remain relative to those roots.
+//! Session capabilities are resolved once at startup. The runtime retains one
+//! validated workspace root, resolved executables, and explicit environment
+//! values selected by the operator.
 use cap_std::{ambient_authority, fs::Dir};
-use std::os::unix::fs::PermissionsExt;
 use std::{
     collections::BTreeMap,
-    env, fs,
+    env,
+    ffi::{CString, OsString},
+    fs,
+    os::{fd::AsRawFd, unix::fs::PermissionsExt},
     path::{Path, PathBuf},
 };
 
@@ -37,21 +40,11 @@ impl Default for Limits {
     }
 }
 
-pub struct Environment {
-    pub pass: Vec<String>,
-    pub allow_override: Vec<String>,
-}
-
-pub struct CommandConfig {
-    pub executable: String,
-    pub allowed_subcommands: Option<Vec<String>>,
-}
-
 pub struct Root {
     pub path: PathBuf,
-    configured: PathBuf,
     pub dir: Dir,
 }
+
 #[repr(transparent)]
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct CommandId(u16);
@@ -63,20 +56,26 @@ impl CommandId {
 pub struct CommandEntry {
     pub name: String,
     pub path: PathBuf,
-    pub allowed_subcommands: Option<Box<[String]>>,
 }
 
 pub struct Config {
-    pub roots: Vec<Root>,
+    pub root: Root,
     pub limits: Limits,
-    pub environment: Environment,
     pub commands: Box<[CommandEntry]>,
-    pub sandbox_commands: bool,
-    pub sandbox_network: bool,
+    pub pass_env: Box<[(String, OsString)]>,
+    pub runtime_path: Option<OsString>,
+    pub network: bool,
 }
 
-fn env_name(s: &str) -> bool {
-    !s.is_empty() && !s.contains(['=', '\0'])
+fn env_name(name: &str) -> bool {
+    !name.is_empty() && !name.contains(['=', '\0'])
+}
+
+fn reserved_env(name: &str) -> bool {
+    matches!(
+        name,
+        "PATH" | "HOME" | "TMPDIR" | "CARGO_HOME" | "RUSTUP_HOME" | "DEVELOPER_DIR" | "SDKROOT"
+    )
 }
 
 pub(crate) fn executable(input: &str) -> Result<PathBuf, String> {
@@ -102,8 +101,8 @@ pub(crate) fn executable(input: &str) -> Result<PathBuf, String> {
             && let Ok(meta) = fs::metadata(&canonical)
             && executable_file(&meta)
         {
-            // Keep the resolved path's final component: tools such as
-            // rustup select their proxy behavior from argv[0] (`cargo`).
+            // Keep the resolved path's final component: tools such as rustup
+            // select proxy behavior from argv[0] (for example, cargo).
             return Ok(path);
         }
     }
@@ -112,94 +111,56 @@ pub(crate) fn executable(input: &str) -> Result<PathBuf, String> {
     ))
 }
 
-#[cfg(all(test, unix))]
-mod tests {
-    use super::executable;
-    use std::{
-        fs,
-        os::unix::fs::{PermissionsExt, symlink},
-        process::Command,
-        time::{SystemTime, UNIX_EPOCH},
-    };
-
-    #[test]
-    fn executable_preserves_symlink_name_when_launched() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let dir =
-            std::env::temp_dir().join(format!("rivet-executable-{}-{nonce}", std::process::id()));
-        fs::create_dir(&dir).unwrap();
-        let target = dir.join("rustup");
-        let shim = dir.join("cargo");
-        fs::write(&target, "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\"\n").unwrap();
-        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
-        symlink(&target, &shim).unwrap();
-
-        let resolved = executable(shim.to_str().unwrap()).unwrap();
-        let output = Command::new(&resolved)
-            .args(["check", "-p", "mesh-compiler"])
-            .output()
-            .unwrap();
-
-        assert!(output.status.success());
-        let stdout = String::from_utf8(output.stdout).unwrap();
-        let mut lines = stdout.lines();
-        assert_eq!(lines.next(), Some(shim.to_str().unwrap()));
-        assert_eq!(lines.collect::<Vec<_>>(), ["check", "-p", "mesh-compiler"]);
-        fs::remove_dir_all(dir).unwrap();
-    }
-}
-
 fn executable_file(metadata: &fs::Metadata) -> bool {
     metadata.is_file() && metadata.permissions().mode() & 0o111 != 0
 }
 
+fn root(path: PathBuf) -> Result<Root, String> {
+    let canonical =
+        fs::canonicalize(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+    if !canonical.is_dir() {
+        return Err(format!(
+            "workspace is not a directory: {}",
+            canonical.display()
+        ));
+    }
+
+    let dir = Dir::open_ambient_dir(&canonical, ambient_authority())
+        .map_err(|error| format!("{}: {error}", canonical.display()))?;
+    dir.read_dir(".")
+        .map_err(|error| format!("{}: {error}", canonical.display()))?;
+
+    let dot = CString::new(".").expect("static string");
+    // SAFETY: the directory fd is open and dot is a valid NUL-terminated path.
+    if unsafe {
+        libc::faccessat(
+            dir.as_raw_fd(),
+            dot.as_ptr(),
+            libc::R_OK | libc::W_OK | libc::X_OK,
+            0,
+        )
+    } < 0
+    {
+        return Err(format!(
+            "{}: workspace needs read, write, and search access",
+            canonical.display()
+        ));
+    }
+
+    Ok(Root {
+        path: canonical,
+        dir,
+    })
+}
+
 impl Config {
     pub fn new(
-        cli_roots: Vec<PathBuf>,
-        command_specs: BTreeMap<String, CommandConfig>,
+        workspace: PathBuf,
+        command_specs: BTreeMap<String, String>,
+        pass_env_names: Vec<String>,
+        network: bool,
     ) -> Result<Self, String> {
-        Self::build(
-            Limits::default(),
-            Environment {
-                pass: vec!["PATH".into(), "HOME".into(), "TMPDIR".into(), "LANG".into()],
-                allow_override: vec!["RUST_LOG".into()],
-            },
-            cli_roots,
-            command_specs,
-            false,
-            false,
-        )
-    }
-
-    pub fn native_session(
-        cli_roots: Vec<PathBuf>,
-        command_specs: BTreeMap<String, CommandConfig>,
-        sandbox_network: bool,
-    ) -> Result<Self, String> {
-        Self::build(
-            Limits::default(),
-            Environment {
-                pass: vec!["PATH".into(), "LANG".into()],
-                allow_override: vec!["RUST_LOG".into()],
-            },
-            cli_roots,
-            command_specs,
-            true,
-            sandbox_network,
-        )
-    }
-
-    fn build(
-        limits: Limits,
-        environment: Environment,
-        cli_roots: Vec<PathBuf>,
-        command_specs: BTreeMap<String, CommandConfig>,
-        sandbox_commands: bool,
-        sandbox_network: bool,
-    ) -> Result<Self, String> {
+        let limits = Limits::default();
         if limits.max_stdout_bytes == 0
             || limits.max_stderr_bytes == 0
             || limits.max_file_read_bytes == 0
@@ -212,81 +173,48 @@ impl Config {
             || limits.max_timeout_ms > u32::MAX as u64
             || limits.default_timeout_ms > limits.max_timeout_ms
         {
-            return Err("limits must be positive, max_file_read_bytes <= 64 MiB, max_running_processes <= 10, and default_timeout_ms must not exceed max_timeout_ms".into());
+            return Err("embedded limits are invalid".into());
         }
-        if cli_roots.is_empty() {
-            return Err("at least one --root is required".into());
-        }
-        let mut roots = Vec::new();
-        for path in cli_roots {
-            let path = if !path.is_absolute() {
-                env::current_dir()
-                    .map_err(|e| format!("failed to resolve --root: {e}"))?
-                    .join(path)
-            } else {
-                path
-            };
-            if !path.is_absolute() {
-                return Err(format!(
-                    "--root must resolve to an absolute path: {}",
-                    path.display()
-                ));
-            }
-            let canonical =
-                fs::canonicalize(&path).map_err(|e| format!("{}: {e}", path.display()))?;
-            if roots.iter().any(|root: &Root| root.path == canonical) {
-                return Err(format!("duplicate root: {}", canonical.display()));
-            }
-            let dir = Dir::open_ambient_dir(&canonical, ambient_authority())
-                .map_err(|e| format!("{}: {e}", canonical.display()))?;
-            roots.push(Root {
-                path: canonical,
-                configured: path,
-                dir,
-            });
-        }
-        // Prefer the most specific root when roots overlap.
-        roots.sort_by(|a, b| {
-            b.path
-                .components()
-                .count()
-                .cmp(&a.path.components().count())
-        });
-        for name in environment.pass.iter().chain(&environment.allow_override) {
-            if !env_name(name) {
-                return Err(format!("invalid environment name: {name:?}"));
-            }
-        }
+
+        let root = root(workspace)?;
+
         if command_specs.len() > u16::MAX as usize + 1 {
             return Err("too many registered commands".into());
         }
         let mut commands = Vec::with_capacity(command_specs.len());
-        for (name, command) in command_specs {
-            if name.is_empty() || name.contains(char::is_whitespace) {
+        for (name, executable_name) in command_specs {
+            if name.is_empty() || name.contains(char::is_whitespace) || name.contains('=') {
                 return Err(format!("invalid command name: {name:?}"));
             }
-            let allowed_subcommands = match command.allowed_subcommands {
-                Some(values)
-                    if values.is_empty() || values.iter().any(|value| value.is_empty()) =>
-                {
-                    return Err(format!("{name}: allowed_subcommands must be nonempty"));
-                }
-                Some(values) => Some(values.into_boxed_slice()),
-                None => None,
-            };
             commands.push(CommandEntry {
                 name,
-                path: executable(&command.executable)?,
-                allowed_subcommands,
+                path: executable(&executable_name)?,
             });
         }
+
+        let mut pass_env = Vec::with_capacity(pass_env_names.len());
+        for name in pass_env_names {
+            if !env_name(&name) {
+                return Err(format!("invalid environment name: {name:?}"));
+            }
+            if reserved_env(&name) {
+                return Err(format!("{name}: environment name is reserved by Rivet"));
+            }
+            if pass_env.iter().any(|(existing, _)| existing == &name) {
+                return Err(format!("duplicate --pass-env {name}"));
+            }
+            let value = env::var_os(&name)
+                .ok_or_else(|| format!("{name}: parent environment variable is not set"))?;
+            pass_env.push((name, value));
+        }
+
         Ok(Self {
-            roots,
+            root,
             limits,
-            environment,
             commands: commands.into_boxed_slice(),
-            sandbox_commands,
-            sandbox_network,
+            pass_env: pass_env.into_boxed_slice(),
+            runtime_path: env::var_os("PATH"),
+            network,
         })
     }
 
@@ -306,130 +234,130 @@ impl Config {
         if !path.is_absolute() {
             return None;
         }
-        self.roots.iter().find_map(|root| {
-            rivet::path_policy::relative_under(&root.path, path)
-                .or_else(|| rivet::path_policy::relative_under(&root.configured, path))
-                .map(|relative| (root, relative))
-        })
-    }
-
-    pub fn doctor(&self) -> Result<(), String> {
-        for root in &self.roots {
-            root.dir
-                .read_dir(".")
-                .map_err(|e| format!("{}: {e}", root.path.display()))?;
-            let path = std::ffi::CString::new(".").expect("static string");
-            use std::os::fd::AsRawFd;
-            // SAFETY: the directory fd is open and path is a valid NUL-terminated string.
-            if unsafe {
-                libc::faccessat(
-                    root.dir.as_raw_fd(),
-                    path.as_ptr(),
-                    libc::R_OK | libc::W_OK | libc::X_OK,
-                    0,
-                )
-            } < 0
-            {
-                return Err(format!(
-                    "{}: root needs read, write, and search access",
-                    root.path.display()
-                ));
-            }
-        }
-        for fd in [0, 1, 2] {
-            // SAFETY: fcntl only inspects the fixed stdio descriptor number.
-            if unsafe { libc::fcntl(fd, libc::F_GETFD) } < 0 {
-                return Err(format!("stdio fd {fd} is unavailable"));
-            }
-        }
-        Ok(())
+        rivet::path_policy::relative_under(&self.root.path, path)
+            .map(|relative| (&self.root, relative))
     }
 }
 
-#[cfg(test)]
-mod native_session_tests {
-    use super::{CommandConfig, Config};
+#[cfg(all(test, unix))]
+mod tests {
+    use super::{Config, executable};
     use std::{
         collections::BTreeMap,
         fs,
+        os::unix::fs::{PermissionsExt, symlink},
+        process::Command,
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    #[test]
-    fn native_session_uses_embedded_defaults_without_toml() {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let root = std::env::temp_dir().join(format!(
-            "rivet-native-session-{}-{nonce}",
-            std::process::id()
-        ));
-        fs::create_dir(&root).unwrap();
-
-        let config = Config::native_session(vec![root.clone()], BTreeMap::new(), false).unwrap();
-        assert_eq!(config.limits.max_stdout_bytes, 2 * 1024 * 1024);
-        assert_eq!(config.limits.max_stderr_bytes, 2 * 1024 * 1024);
-        assert_eq!(config.limits.max_file_read_bytes, 4 * 1024 * 1024);
-        assert_eq!(config.limits.max_directory_entries, 1000);
-        assert_eq!(config.limits.max_running_processes, 8);
-        assert_eq!(config.limits.default_timeout_ms, 120_000);
-        assert_eq!(config.limits.max_timeout_ms, 1_800_000);
-        assert_eq!(config.environment.pass, ["PATH", "LANG"]);
-        assert_eq!(config.environment.allow_override, ["RUST_LOG"]);
-        assert!(config.sandbox_commands);
-        assert!(!config.sandbox_network);
-
-        fs::remove_dir_all(root).unwrap();
-    }
-
-    #[test]
-    fn frozen_commands_use_sorted_dense_ids() {
+    fn temp_root(label: &str) -> std::path::PathBuf {
         let nonce = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
         let root =
-            std::env::temp_dir().join(format!("rivet-command-ids-{}-{nonce}", std::process::id()));
+            std::env::temp_dir().join(format!("rivet-{label}-{}-{nonce}", std::process::id()));
         fs::create_dir(&root).unwrap();
+        root
+    }
 
-        let command = |executable: &str| CommandConfig {
-            executable: executable.into(),
-            allowed_subcommands: None,
-        };
+    #[test]
+    fn executable_preserves_symlink_name_when_launched() {
+        let dir = temp_root("executable");
+        let target = dir.join("rustup");
+        let shim = dir.join("cargo");
+        fs::write(&target, "#!/bin/sh\nprintf '%s\\n' \"$0\" \"$@\"\n").unwrap();
+        fs::set_permissions(&target, fs::Permissions::from_mode(0o755)).unwrap();
+        symlink(&target, &shim).unwrap();
+
+        let resolved = executable(shim.to_str().unwrap()).unwrap();
+        let output = Command::new(&resolved)
+            .args(["check", "-p", "mesh-compiler"])
+            .output()
+            .unwrap();
+
+        assert!(output.status.success());
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        let mut lines = stdout.lines();
+        assert_eq!(lines.next(), Some(shim.to_str().unwrap()));
+        assert_eq!(lines.collect::<Vec<_>>(), ["check", "-p", "mesh-compiler"]);
+        fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn session_state_is_single_root_and_sorted_commands() {
+        let root = temp_root("session");
         let mut commands = BTreeMap::new();
-        commands.insert("zeta".into(), command("/bin/echo"));
-        commands.insert("alpha".into(), command("/bin/echo"));
-        commands.insert(
-            "restricted".into(),
-            CommandConfig {
-                executable: "/bin/echo".into(),
-                allowed_subcommands: Some(vec!["check".into(), "test".into()]),
-            },
-        );
+        commands.insert("zeta".into(), "/bin/echo".into());
+        commands.insert("alpha".into(), "/bin/echo".into());
 
-        let config = Config::native_session(vec![root.clone()], commands, false).unwrap();
+        let config = Config::new(root.clone(), commands, Vec::new(), false).unwrap();
+        assert_eq!(config.root.path, root.canonicalize().unwrap());
         assert_eq!(
             config
                 .commands
                 .iter()
                 .map(|entry| entry.name.as_str())
                 .collect::<Vec<_>>(),
-            ["alpha", "restricted", "zeta"]
+            ["alpha", "zeta"]
         );
-
-        let (alpha, alpha_entry) = config.command("alpha").unwrap();
-        let (_, restricted) = config.command("restricted").unwrap();
+        let (alpha, _) = config.command("alpha").unwrap();
         let (zeta, _) = config.command("zeta").unwrap();
-        assert!(alpha_entry.allowed_subcommands.is_none());
-        assert_eq!(
-            restricted.allowed_subcommands.as_deref().unwrap(),
-            ["check", "test"]
-        );
         assert_eq!(config.command_name(alpha), "alpha");
         assert_eq!(config.command_name(zeta), "zeta");
         assert_ne!(alpha.0, zeta.0);
+        assert!(!config.network);
 
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn pass_env_rejects_reserved_and_missing_names() {
+        let root = temp_root("env");
+        let reserved = Config::new(root.clone(), BTreeMap::new(), vec!["HOME".into()], false)
+            .err()
+            .unwrap();
+        assert!(reserved.contains("reserved"));
+
+        let missing_name = format!("RIVET_TEST_MISSING_{}", std::process::id());
+        unsafe { std::env::remove_var(&missing_name) };
+        let missing = Config::new(
+            root.clone(),
+            BTreeMap::new(),
+            vec![missing_name.clone()],
+            false,
+        )
+        .err()
+        .unwrap();
+        assert!(missing.contains(&missing_name));
+        assert!(missing.contains("not set"));
+
+        fs::remove_dir_all(root).unwrap();
+    }
+    #[test]
+    fn pass_env_is_captured_once_and_duplicates_fail() {
+        let root = temp_root("env-snapshot");
+        let name = format!("RIVET_TEST_ENV_{}", std::process::id());
+        unsafe { std::env::set_var(&name, "first") };
+
+        let config = Config::new(root.clone(), BTreeMap::new(), vec![name.clone()], false).unwrap();
+        unsafe { std::env::set_var(&name, "second") };
+
+        assert_eq!(config.pass_env.len(), 1);
+        assert_eq!(config.pass_env[0].0, name);
+        assert_eq!(config.pass_env[0].1, std::ffi::OsString::from("first"));
+
+        let duplicate = Config::new(
+            root.clone(),
+            BTreeMap::new(),
+            vec![name.clone(), name.clone()],
+            false,
+        )
+        .err()
+        .unwrap();
+        assert!(duplicate.contains("duplicate --pass-env"));
+
+        unsafe { std::env::remove_var(&name) };
         fs::remove_dir_all(root).unwrap();
     }
 }
