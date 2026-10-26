@@ -1,11 +1,11 @@
-use crate::config::Config;
+#[cfg(test)]
+use crate::config::build_test_config;
+use crate::config::{Config, build_config};
 use std::{
-    collections::BTreeMap,
     env,
     io::{self, BufRead, IsTerminal, Write},
     path::{Path, PathBuf},
     process::ExitCode,
-    sync::Arc,
 };
 
 const BUILT_INS: [(&str, &str); 6] = [
@@ -69,7 +69,7 @@ fn collect_commands<R: BufRead, W: Write>(
     output: &mut W,
     cwd: &Path,
     color: bool,
-) -> Result<BTreeMap<String, String>, String> {
+) -> Result<(Vec<String>, Vec<String>), String> {
     let heading = if color {
         "\x1b[1;36mWorkspace\x1b[0m"
     } else {
@@ -87,7 +87,8 @@ fn collect_commands<R: BufRead, W: Write>(
     )
     .map_err(|error| error.to_string())?;
 
-    let mut commands = BTreeMap::new();
+    let mut command_name = Vec::new();
+    let mut command_executable = Vec::new();
     let add_custom;
     loop {
         let selection =
@@ -121,10 +122,8 @@ fn collect_commands<R: BufRead, W: Write>(
         add_custom = chosen.contains(&BUILT_INS.len());
         for index in chosen.into_iter().filter(|index| *index < BUILT_INS.len()) {
             let (name, executable) = BUILT_INS[index];
-            commands.insert(
-                name.to_owned(),
-                prompt_executable(input, output, executable.to_owned())?,
-            );
+            command_name.push(name.to_owned());
+            command_executable.push(prompt_executable(input, output, executable.to_owned())?);
         }
         break;
     }
@@ -139,7 +138,7 @@ fn collect_commands<R: BufRead, W: Write>(
                 || executable.is_empty()
                 || name.chars().any(char::is_whitespace)
                 || name.contains('=')
-                || commands.contains_key(&name)
+                || command_name.iter().any(|existing| existing == &name)
             {
                 writeln!(
                     output,
@@ -149,14 +148,15 @@ fn collect_commands<R: BufRead, W: Write>(
                 continue;
             }
 
-            commands.insert(name, prompt_executable(input, output, executable)?);
+            command_name.push(name);
+            command_executable.push(prompt_executable(input, output, executable)?);
             if !confirm(input, output, "Add another custom command? [y/N]: ")? {
                 break;
             }
         }
     }
 
-    Ok(commands)
+    Ok((command_name, command_executable))
 }
 
 fn collect_environment<R: BufRead, W: Write>(
@@ -209,43 +209,42 @@ fn print_scope<W: Write>(output: &mut W, config: &Config, color: bool) -> io::Re
             "disabled"
         }
     )?;
-    if config.command_paths.is_empty() {
+    if config.command_path_grant.is_empty() {
         writeln!(output, "  {check} Command paths: none")?;
     } else {
-        for path in &config.command_paths {
+        for path in &config.command_path_grant {
             writeln!(output, "  {check} Command path: {}", path.display())?;
         }
     }
-    if config.pass_env.is_empty() {
+    if config.env_name.is_empty() {
         writeln!(output, "  {check} Environment passthrough: none")?;
     } else {
-        let names = config
-            .pass_env
-            .iter()
-            .map(|(name, _)| name.as_str())
-            .collect::<Vec<_>>()
-            .join(", ");
-        writeln!(output, "  {check} Environment passthrough: {names}")?;
+        writeln!(
+            output,
+            "  {check} Environment passthrough: {}",
+            config.env_name.join(", ")
+        )?;
     }
-    if config.commands.is_empty() {
+    if config.command_name.is_empty() {
         writeln!(output, "  {check} Commands: none")?;
     } else {
-        for command in &config.commands {
+        for index in 0..config.command_name.len() {
             writeln!(
                 output,
                 "  {check} {} → {}",
-                command.name,
-                command.path.display()
+                config.command_name[index],
+                config.command_executable[index].display()
             )?;
         }
     }
     Ok(())
 }
 
-type ParsedArgs = (BTreeMap<String, String>, Vec<String>, Vec<PathBuf>, bool);
+type ParsedArgs = (Vec<String>, Vec<String>, Vec<String>, Vec<PathBuf>, bool);
 
 fn parse_args(args: Vec<String>) -> Result<ParsedArgs, String> {
-    let mut commands = BTreeMap::new();
+    let mut command_name = Vec::new();
+    let mut command_executable = Vec::new();
     let mut pass_env = Vec::new();
     let mut command_paths = Vec::new();
     let mut network = false;
@@ -257,12 +256,11 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs, String> {
             "--allow-command" => {
                 let value = iter.next().ok_or("--allow-command requires NAME=VALUE")?;
                 let (name, executable) = crate::assignment("--allow-command", &value)?;
-                if commands
-                    .insert(name.to_owned(), executable.to_owned())
-                    .is_some()
-                {
+                if command_name.iter().any(|existing| existing == name) {
                     return Err(format!("duplicate --allow-command for {name}"));
                 }
+                command_name.push(name.to_owned());
+                command_executable.push(executable.to_owned());
             }
             "--allow-command-path" => {
                 command_paths.push(PathBuf::from(
@@ -276,7 +274,13 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs, String> {
         }
     }
 
-    Ok((commands, pass_env, command_paths, network))
+    Ok((
+        command_name,
+        command_executable,
+        pass_env,
+        command_paths,
+        network,
+    ))
 }
 
 pub async fn run(args: Vec<String>) -> ExitCode {
@@ -285,13 +289,14 @@ pub async fn run(args: Vec<String>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let (mut commands, mut pass_env, command_paths, mut network) = match parse_args(args) {
-        Ok(parsed) => parsed,
-        Err(error) => {
-            eprintln!("{error}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let (mut command_name, mut command_executable, mut pass_env, command_paths, mut network) =
+        match parse_args(args) {
+            Ok(parsed) => parsed,
+            Err(error) => {
+                eprintln!("{error}");
+                return ExitCode::FAILURE;
+            }
+        };
 
     let cwd = match env::current_dir() {
         Ok(path) => path,
@@ -302,16 +307,17 @@ pub async fn run(args: Vec<String>) -> ExitCode {
     };
 
     let color = io::stdout().is_terminal() && env::var_os("NO_COLOR").is_none();
-    if commands.is_empty() {
+    if command_name.is_empty() {
         let mut input = io::stdin().lock();
         let mut output = io::stdout().lock();
-        commands = match collect_commands(&mut input, &mut output, &cwd, color) {
-            Ok(commands) => commands,
-            Err(error) => {
-                eprintln!("{error}");
-                return ExitCode::FAILURE;
-            }
-        };
+        (command_name, command_executable) =
+            match collect_commands(&mut input, &mut output, &cwd, color) {
+                Ok(commands) => commands,
+                Err(error) => {
+                    eprintln!("{error}");
+                    return ExitCode::FAILURE;
+                }
+            };
 
         if !network {
             network = match confirm(
@@ -338,14 +344,20 @@ pub async fn run(args: Vec<String>) -> ExitCode {
         }
     }
 
-    let config =
-        match Config::new_with_command_paths(cwd, commands, pass_env, command_paths, network) {
-            Ok(config) => Arc::new(config),
-            Err(error) => {
-                eprintln!("STARTUP_ERROR: {error}");
-                return ExitCode::FAILURE;
-            }
-        };
+    let config = match build_config(
+        cwd,
+        command_name,
+        command_executable,
+        pass_env,
+        command_paths,
+        network,
+    ) {
+        Ok(config) => config,
+        Err(error) => {
+            eprintln!("STARTUP_ERROR: {error}");
+            return ExitCode::FAILURE;
+        }
+    };
 
     if let Err(error) = crate::sandbox::doctor() {
         eprintln!("SANDBOX_ERROR: {error}");
@@ -357,7 +369,12 @@ pub async fn run(args: Vec<String>) -> ExitCode {
         return ExitCode::FAILURE;
     }
 
-    match crate::tunnel::run(config).await {
+    if let Err(error) = crate::config::install(config) {
+        eprintln!("STARTUP_ERROR: {error}");
+        return ExitCode::FAILURE;
+    }
+
+    match crate::tunnel::run().await {
         Ok(()) => ExitCode::SUCCESS,
         Err(error) => {
             eprintln!("{error}");
@@ -376,16 +393,23 @@ mod tests {
         let cwd = env::current_dir().unwrap();
         let mut input = Cursor::new("2,4,5,7\nhttp\ncurl\ny\nhello\nsh\nn\n");
         let mut output = Vec::new();
-        let commands = collect_commands(&mut input, &mut output, &cwd, false).unwrap();
+        let (command_name, command_executable) =
+            collect_commands(&mut input, &mut output, &cwd, false).unwrap();
 
-        assert_eq!(commands.get("mkdir").map(String::as_str), Some("mkdir"));
-        assert_eq!(commands.get("git").map(String::as_str), Some("git"));
-        assert_eq!(commands.get("cargo").map(String::as_str), Some("cargo"));
-        assert_eq!(commands.get("http").map(String::as_str), Some("curl"));
-        assert_eq!(commands.get("hello").map(String::as_str), Some("sh"));
-        assert!(!commands.contains_key("uv"));
-        assert!(!commands.contains_key("rg"));
-        assert!(!commands.contains_key("make"));
+        let find = |name: &str| {
+            command_name
+                .iter()
+                .position(|candidate| candidate == name)
+                .map(|index| command_executable[index].as_str())
+        };
+        assert_eq!(find("mkdir"), Some("mkdir"));
+        assert_eq!(find("git"), Some("git"));
+        assert_eq!(find("cargo"), Some("cargo"));
+        assert_eq!(find("http"), Some("curl"));
+        assert_eq!(find("hello"), Some("sh"));
+        assert_eq!(find("uv"), None);
+        assert_eq!(find("rg"), None);
+        assert_eq!(find("make"), None);
 
         let rendered = String::from_utf8(output).unwrap();
         assert!(rendered.contains("7. Add a custom command"));
@@ -411,19 +435,21 @@ mod tests {
 
     #[test]
     fn args_have_one_command_policy_explicit_paths_and_env_names() {
-        let (commands, pass_env, command_paths, network) = parse_args(vec![
-            "--network".into(),
-            "--allow-command".into(),
-            "shell=/bin/sh".into(),
-            "--allow-command-path".into(),
-            "/tmp/tool-state-a".into(),
-            "--allow-command-path".into(),
-            "/tmp/tool-state-b".into(),
-            "--pass-env".into(),
-            "TOKEN".into(),
-        ])
-        .unwrap();
-        assert_eq!(commands.get("shell").map(String::as_str), Some("/bin/sh"));
+        let (command_name, command_executable, pass_env, command_paths, network) =
+            parse_args(vec![
+                "--network".into(),
+                "--allow-command".into(),
+                "shell=/bin/sh".into(),
+                "--allow-command-path".into(),
+                "/tmp/tool-state-a".into(),
+                "--allow-command-path".into(),
+                "/tmp/tool-state-b".into(),
+                "--pass-env".into(),
+                "TOKEN".into(),
+            ])
+            .unwrap();
+        assert_eq!(command_name, ["shell"]);
+        assert_eq!(command_executable, ["/bin/sh"]);
         assert_eq!(pass_env, ["TOKEN"]);
         assert_eq!(
             command_paths,
@@ -445,9 +471,10 @@ mod tests {
         let secret = "secret-value-must-not-render";
         unsafe { std::env::set_var(&name, secret) };
 
-        let config = Config::new(
+        let config = build_test_config(
             env::current_dir().unwrap(),
-            BTreeMap::from([("shell".into(), "/bin/sh".into())]),
+            vec!["shell".into()],
+            vec!["/bin/sh".into()],
             vec![name.clone()],
             false,
         )

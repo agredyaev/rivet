@@ -7,9 +7,9 @@ use serde_json::{Value, value::RawValue};
 use std::time::Duration;
 
 #[derive(Deserialize)]
-pub struct PollEnvelope {
-    #[serde(default)]
-    pub commands: Vec<Box<RawValue>>,
+pub struct PollEnvelope<'a> {
+    #[serde(default, borrow)]
+    pub commands: Vec<&'a RawValue>,
 }
 
 #[derive(Deserialize, PartialEq, Eq)]
@@ -22,7 +22,7 @@ pub enum CommandType {
 }
 
 #[derive(Deserialize)]
-pub struct WireCommand {
+pub struct WireCommand<'a> {
     pub request_id: String,
     pub shard_token: String,
     pub command_type: CommandType,
@@ -30,16 +30,16 @@ pub struct WireCommand {
     pub channel: Option<String>,
     #[serde(default)]
     pub response_timeout: Option<Value>,
-    #[serde(default)]
-    pub jsonrpc: Option<Box<RawValue>>,
+    #[serde(default, borrow)]
+    pub jsonrpc: Option<&'a RawValue>,
 }
 
-pub fn parse_poll(input: &[u8]) -> Result<PollEnvelope, serde_json::Error> {
+pub fn parse_poll(input: &[u8]) -> Result<PollEnvelope<'_>, serde_json::Error> {
     serde_json::from_slice(input)
 }
 
-pub fn parse_command(input: &RawValue) -> Result<WireCommand, serde_json::Error> {
-    serde_json::from_str(input.get())
+pub fn parse_command(input: &[u8]) -> Result<WireCommand<'_>, serde_json::Error> {
+    serde_json::from_slice(input)
 }
 
 pub fn parse_response_timeout(value: &Value) -> Option<Duration> {
@@ -159,7 +159,7 @@ mod tests {
           "future_field":{"ignored":true}
         }]}"#;
         let envelope = parse_poll(body).unwrap();
-        let command = parse_command(envelope.commands[0].as_ref()).unwrap();
+        let command = parse_command(envelope.commands[0].get().as_bytes()).unwrap();
         assert!(command.jsonrpc.unwrap().get().contains("tools/list"));
     }
 }

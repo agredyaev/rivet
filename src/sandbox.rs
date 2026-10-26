@@ -387,10 +387,15 @@ fn macos_profile(
     for path in command_paths {
         profile.push_str(&allow_read_rule(path));
         let filter = if path.is_dir() { "subpath" } else { "literal" };
+        let literal = seatbelt_literal(path);
         profile.push_str(&format!(
-            "(allow file-read* file-write* ({filter} \"{}\"))\n",
-            seatbelt_literal(path)
+            "(allow file-read* file-write* ({filter} \"{literal}\"))\n"
         ));
+        if network {
+            profile.push_str(&format!(
+                "(allow network-outbound ({filter} \"{literal}\"))\n"
+            ));
+        }
     }
 
     profile.push_str(&allow_read_rule(executable));
@@ -581,6 +586,8 @@ fn linux_command(
 #[cfg(all(test, any(target_os = "macos", target_os = "linux")))]
 mod tests {
     use super::*;
+    #[cfg(target_os = "macos")]
+    use std::os::unix::net::UnixListener;
     use std::{
         net::TcpListener,
         time::{SystemTime, UNIX_EPOCH},
@@ -831,6 +838,38 @@ mod tests {
         fs::remove_dir_all(base).unwrap();
     }
 
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_network_allows_unix_sockets_only_under_explicit_command_paths() {
+        let (base, workspace, sibling) = test_workspace();
+        let allowed_dir = sibling.join("allowed");
+        let denied_dir = sibling.join("denied");
+        fs::create_dir_all(&allowed_dir).unwrap();
+        fs::create_dir_all(&denied_dir).unwrap();
+
+        let network_profile = macos_profile(
+            Path::new("/bin/cat"),
+            &workspace,
+            std::slice::from_ref(&allowed_dir),
+            true,
+        );
+        let allowed = seatbelt_literal(&allowed_dir);
+        let denied = seatbelt_literal(&denied_dir);
+        let socket_grant = format!("(allow network-outbound (subpath \"{allowed}\"))");
+        assert!(network_profile.contains(&socket_grant));
+        assert!(!network_profile.contains(&denied));
+
+        let offline_profile = macos_profile(
+            Path::new("/bin/cat"),
+            &workspace,
+            std::slice::from_ref(&allowed_dir),
+            false,
+        );
+        assert!(!offline_profile.contains(&socket_grant));
+
+        fs::remove_dir_all(base).unwrap();
+    }
+
     #[cfg(target_os = "linux")]
     #[test]
     fn linux_profile_binds_only_explicit_command_path() {
@@ -990,6 +1029,72 @@ mod tests {
             output.status.success(),
             "{}",
             String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn sandbox_network_reaches_unix_socket_in_explicit_command_path() {
+        let workspace = env::current_dir().unwrap().canonicalize().unwrap();
+        doctor().unwrap();
+        let python = env::split_paths(&env::var_os("PATH").unwrap_or_default())
+            .map(|dir| dir.join("python3"))
+            .find(|path| path.is_file())
+            .expect("python3 is required by the test suite");
+
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let socket_dir = PathBuf::from(format!(
+            "/private/tmp/rivet-unix-socket-test-{}-{nonce}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&socket_dir).unwrap();
+        let socket_path = socket_dir.join("docker.sock");
+        let _listener = UnixListener::bind(&socket_path).unwrap();
+        let socket = socket_path.display().to_string();
+
+        let denied_script = format!(
+            "import socket,sys; s=socket.socket(socket.AF_UNIX); sys.exit(0 if s.connect_ex({socket:?}) != 0 else 1)"
+        );
+        let mut denied = command_with_paths(
+            &python,
+            &["-c".to_owned(), denied_script],
+            &workspace,
+            &workspace,
+            std::slice::from_ref(&socket_dir),
+            false,
+        )
+        .unwrap();
+        apply_environment(&mut denied, &workspace);
+        let denied = denied.output().unwrap();
+        assert!(
+            denied.status.success(),
+            "{}",
+            String::from_utf8_lossy(&denied.stderr)
+        );
+
+        let allowed_script = format!(
+            "import socket,sys; s=socket.socket(socket.AF_UNIX); sys.exit(0 if s.connect_ex({socket:?}) == 0 else 1)"
+        );
+        let mut allowed = command_with_paths(
+            &python,
+            &["-c".to_owned(), allowed_script],
+            &workspace,
+            &workspace,
+            std::slice::from_ref(&socket_dir),
+            true,
+        )
+        .unwrap();
+        apply_environment(&mut allowed, &workspace);
+        let allowed = allowed.output().unwrap();
+        let _ = fs::remove_file(&socket_path);
+        let _ = fs::remove_dir(&socket_dir);
+        assert!(
+            allowed.status.success(),
+            "{}",
+            String::from_utf8_lossy(&allowed.stderr)
         );
     }
 

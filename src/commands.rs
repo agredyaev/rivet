@@ -3,7 +3,7 @@
 //! This module applies command, path, environment, and timeout policy before a
 //! managed child starts. Arguments go directly to the configured executable.
 use crate::{
-    config::{CommandId, Config, MAX_TIMEOUT_MS},
+    config::{CommandId, Config, MAX_TIMEOUT_MS, command_executable, command_id, root_for},
     mcp::Fault,
     sandbox,
 };
@@ -31,8 +31,7 @@ pub fn admitted(
     request: &CommandRequest,
     default_timeout: u64,
 ) -> Result<(Command, u64, CommandId), Fault> {
-    let (command_id, entry) = config
-        .command(&request.command)
+    let command_id = command_id(config, &request.command)
         .ok_or_else(|| Fault::new("COMMAND_NOT_FOUND", "command is not registered"))?;
     if !arguments_valid(&request.args) {
         return Err(Fault::new(
@@ -47,7 +46,7 @@ pub fn admitted(
             "timeout_ms is outside built-in limits",
         ));
     }
-    let (root, relative) = config.root_for(Path::new(&request.cwd)).ok_or_else(|| {
+    let (root, relative) = root_for(config, Path::new(&request.cwd)).ok_or_else(|| {
         Fault::new(
             "PATH_DENIED",
             "cwd is outside allowed roots or is not absolute",
@@ -64,11 +63,11 @@ pub fn admitted(
     let canonical_cwd = fs::canonicalize(&request.cwd)
         .map_err(|_| Fault::new("PATH_DENIED", "cwd cannot be checked"))?;
     let mut command = sandbox::command_with_paths(
-        &entry.path,
+        command_executable(config, command_id),
         &request.args,
         &config.root.path,
         &canonical_cwd,
-        &config.command_paths,
+        &config.command_path_grant,
         config.network,
     )
     .map_err(|error| {
@@ -87,8 +86,8 @@ pub fn admitted(
     if let Some(path) = &config.runtime_path {
         command.env("PATH", path);
     }
-    for (name, value) in &config.pass_env {
-        command.env(name, value);
+    for index in 0..config.env_name.len() {
+        command.env(&config.env_name[index], &config.env_value[index]);
     }
     sandbox::apply_environment(&mut command, &config.root.path);
 

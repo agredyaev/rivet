@@ -1,10 +1,8 @@
 //! MCP tool request routing for the native tunnel runtime.
 use crate::{
     commands::CommandRequest,
-    config::{Config, DEFAULT_TIMEOUT_MS, MAX_PROCESS_OUTPUT_BYTES, MAX_TEXT_BYTES},
-    filesystem,
-    process::ProcessTable,
-    profile,
+    config::{self, DEFAULT_TIMEOUT_MS, MAX_PROCESS_OUTPUT_BYTES, MAX_TEXT_BYTES},
+    filesystem, process, profile,
 };
 use rivet::mcp_wire::decode_client_message;
 use rmcp::{
@@ -21,9 +19,9 @@ use rmcp::{
     transport::OneshotTransport,
 };
 use serde::{Deserialize, Serialize};
-use serde_json::{Value, json, value::RawValue};
+use serde_json::{Value, json};
 use std::{
-    sync::{Arc, LazyLock, Mutex},
+    sync::{LazyLock, Mutex},
     time::Instant,
 };
 
@@ -66,26 +64,19 @@ fn result(value: Result<Value, Fault>) -> CallToolResult {
     }
 }
 
-#[derive(Clone)]
-pub(crate) struct Rivet {
-    config: Arc<Config>,
-    processes: Arc<ProcessTable>,
-    mutation: Arc<Mutex<()>>,
-}
+static FILE_MUTATION: Mutex<()> = Mutex::new(());
+
+#[derive(Clone, Copy, Default)]
+pub(crate) struct Rivet;
 
 pub(crate) enum Dispatch {
-    Response(Box<RawValue>),
+    Response(Vec<u8>),
     NotificationAck,
 }
 
 impl Rivet {
-    pub(crate) fn new(config: Arc<Config>) -> Self {
-        let processes = Arc::new(ProcessTable::new());
-        Self {
-            config,
-            processes,
-            mutation: Arc::new(Mutex::new(())),
-        }
+    pub(crate) const fn new() -> Self {
+        Self
     }
 
     #[cfg(test)]
@@ -113,8 +104,7 @@ impl Rivet {
                 let setup_started = profiling.then(Instant::now);
                 let (transport, mut receiver) =
                     OneshotTransport::<RoleServer>::new(ClientJsonRpcMessage::Request(request));
-                let service =
-                    serve_directly::<RoleServer, _, _, _, _>(self.clone(), transport, None);
+                let service = serve_directly::<RoleServer, _, _, _, _>(*self, transport, None);
                 let service_setup_us = setup_started
                     .as_ref()
                     .map(|started| started.elapsed().as_micros());
@@ -129,8 +119,7 @@ impl Rivet {
                     .map(|started| started.elapsed().as_micros());
 
                 let serialize_started = profiling.then(Instant::now);
-                let raw = serde_json::value::to_raw_value(&response)
-                    .map_err(|error| error.to_string())?;
+                let raw = serde_json::to_vec(&response).map_err(|error| error.to_string())?;
                 let serialize_us = serialize_started
                     .as_ref()
                     .map(|started| started.elapsed().as_micros());
@@ -146,7 +135,7 @@ impl Rivet {
                         "event": "mcp_dispatch",
                         "seq": profile_seq,
                         "request_bytes": input.len(),
-                        "response_bytes": raw.get().len(),
+                        "response_bytes": raw.len(),
                         "decode_us": decode_us,
                         "service_setup_us": service_setup_us,
                         "response_wait_us": response_wait_us,
@@ -185,7 +174,7 @@ impl Rivet {
     }
 
     pub(crate) async fn shutdown(&self) {
-        self.processes.shutdown().await;
+        process::shutdown().await;
     }
 }
 
@@ -232,29 +221,26 @@ impl Rivet {
     #[tool(description = "List effective allowed roots for file paths and command cwd")]
     fn list_roots(&self) -> CallToolResult {
         result(Ok(
-            json!({"roots": [self.config.root.path.display().to_string()]}),
+            json!({"roots": [config::session().root.path.display().to_string()]}),
         ))
     }
 
     #[tool(description = "List registered command names and resolved executables")]
     fn list_commands(&self) -> CallToolResult {
-        let commands: Vec<_> = self
-            .config
-            .commands
-            .iter()
-            .map(|entry| {
-                json!({
-                    "name": entry.name,
-                    "executable": entry.path.display().to_string()
-                })
-            })
-            .collect();
+        let config = config::session();
+        let mut commands = Vec::with_capacity(config.command_name.len());
+        for index in 0..config.command_name.len() {
+            commands.push(json!({
+                "name": config.command_name[index],
+                "executable": config.command_executable[index].display().to_string()
+            }));
+        }
         result(Ok(json!({"commands": commands})))
     }
 
     #[tool(description = "Submit a registered command and return its managed process ID")]
     async fn run_command(&self, Parameters(request): Parameters<CommandRequest>) -> CallToolResult {
-        result(self.processes.submit(&self.config, request).await)
+        result(process::submit(config::session(), request).await)
     }
 
     #[tool(description = "Submit up to 8 independent registered commands in one MCP request.")]
@@ -273,7 +259,7 @@ impl Rivet {
         let rss_before_bytes = profile::self_current_rss_bytes();
         let mut rows = Vec::with_capacity(request.commands.len());
         for command in request.commands {
-            rows.push(match self.processes.submit(&self.config, command).await {
+            rows.push(match process::submit(config::session(), command).await {
                 Ok(value) => json!({"ok": true, "result": value}),
                 Err(error) => json!({
                     "ok": false,
@@ -301,14 +287,14 @@ impl Rivet {
         &self,
         Parameters(request): Parameters<CommandRequest>,
     ) -> CallToolResult {
-        result(self.processes.start(&self.config, request).await)
+        result(process::start(config::session(), request).await)
     }
 
     #[tool(
         description = "Return one snapshot of all retained running and completed managed processes"
     )]
     fn list_processes(&self) -> CallToolResult {
-        result(Ok(self.processes.list(&self.config)))
+        result(Ok(process::list(config::session())))
     }
 
     #[tool(description = "Read bounded captured stdout and stderr for one process")]
@@ -317,7 +303,7 @@ impl Rivet {
         Parameters(request): Parameters<ProcessOutputRequest>,
     ) -> CallToolResult {
         let max = MAX_PROCESS_OUTPUT_BYTES;
-        result(self.processes.read(
+        result(process::read(
             request.process_id,
             request.stdout_offset.unwrap_or(0),
             request.stderr_offset.unwrap_or(0),
@@ -332,14 +318,13 @@ impl Rivet {
         Parameters(request): Parameters<ProcessInputRequest>,
     ) -> CallToolResult {
         result(
-            self.processes
-                .input(
-                    request.process_id,
-                    &request.text,
-                    MAX_TEXT_BYTES,
-                    DEFAULT_TIMEOUT_MS,
-                )
-                .await,
+            process::input(
+                request.process_id,
+                &request.text,
+                MAX_TEXT_BYTES,
+                DEFAULT_TIMEOUT_MS,
+            )
+            .await,
         )
     }
 
@@ -348,7 +333,7 @@ impl Rivet {
         &self,
         Parameters(request): Parameters<ProcessStopRequest>,
     ) -> CallToolResult {
-        result(self.processes.stop(request.process_id).await)
+        result(process::stop(request.process_id).await)
     }
 
     #[tool(description = "List a bounded number of directory entries within allowed roots")]
@@ -356,9 +341,8 @@ impl Rivet {
         &self,
         Parameters(request): Parameters<filesystem::ListRequest>,
     ) -> CallToolResult {
-        let config = self.config.clone();
         result(
-            tokio::task::spawn_blocking(move || filesystem::list(&config, request))
+            tokio::task::spawn_blocking(move || filesystem::list(config::session(), request))
                 .await
                 .unwrap_or_else(|_| Err(Fault::new("IO_ERROR", "directory worker failed"))),
         )
@@ -369,9 +353,8 @@ impl Rivet {
         &self,
         Parameters(request): Parameters<filesystem::ReadRequest>,
     ) -> CallToolResult {
-        let config = self.config.clone();
         result(
-            tokio::task::spawn_blocking(move || filesystem::read(&config, request))
+            tokio::task::spawn_blocking(move || filesystem::read(config::session(), request))
                 .await
                 .unwrap_or_else(|_| Err(Fault::new("IO_ERROR", "file worker failed"))),
         )
@@ -400,19 +383,20 @@ impl Rivet {
             )));
         }
 
-        let config = self.config.clone();
         result(
             tokio::task::spawn_blocking(move || {
                 let rows = request
                     .files
                     .into_iter()
-                    .map(|request| match filesystem::read(&config, request) {
-                        Ok(value) => json!({"ok": true, "result": value}),
-                        Err(error) => json!({
-                            "ok": false,
-                            "error": serde_json::to_value(error).expect("serializable error")
-                        }),
-                    })
+                    .map(
+                        |request| match filesystem::read(config::session(), request) {
+                            Ok(value) => json!({"ok": true, "result": value}),
+                            Err(error) => json!({
+                                "ok": false,
+                                "error": serde_json::to_value(error).expect("serializable error")
+                            }),
+                        },
+                    )
                     .collect::<Vec<_>>();
                 Ok(json!({"results": rows}))
             })
@@ -426,12 +410,10 @@ impl Rivet {
         &self,
         Parameters(request): Parameters<filesystem::WriteRequest>,
     ) -> CallToolResult {
-        let config = self.config.clone();
-        let lock = self.mutation.clone();
         result(
             tokio::task::spawn_blocking(move || {
-                let _guard = lock.lock().unwrap();
-                filesystem::write(&config, request)
+                let _guard = FILE_MUTATION.lock().unwrap();
+                filesystem::write(config::session(), request)
             })
             .await
             .unwrap_or_else(|_| Err(Fault::new("IO_ERROR", "file worker failed"))),
@@ -443,12 +425,10 @@ impl Rivet {
         &self,
         Parameters(request): Parameters<filesystem::ReplaceRequest>,
     ) -> CallToolResult {
-        let config = self.config.clone();
-        let lock = self.mutation.clone();
         result(
             tokio::task::spawn_blocking(move || {
-                let _guard = lock.lock().unwrap();
-                filesystem::replace(&config, request)
+                let _guard = FILE_MUTATION.lock().unwrap();
+                filesystem::replace(config::session(), request)
             })
             .await
             .unwrap_or_else(|_| Err(Fault::new("IO_ERROR", "file worker failed"))),
@@ -476,40 +456,49 @@ impl rmcp::ServerHandler for Rivet {
 mod direct_tests {
     use super::*;
     use std::{
-        collections::BTreeMap,
         fs,
-        sync::atomic::{AtomicU64, Ordering},
+        sync::{
+            OnceLock,
+            atomic::{AtomicU64, Ordering},
+        },
         time::{SystemTime, UNIX_EPOCH},
     };
 
-    static NEXT_TEST_ROOT: AtomicU64 = AtomicU64::new(1);
+    static TEST_ROOT: OnceLock<std::path::PathBuf> = OnceLock::new();
+    static NEXT_FILE: AtomicU64 = AtomicU64::new(1);
 
-    fn direct_config() -> (Arc<Config>, std::path::PathBuf) {
-        let nonce = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_nanos();
-        let sequence = NEXT_TEST_ROOT.fetch_add(1, Ordering::Relaxed);
-        let root = std::env::temp_dir().join(format!(
-            "rivet-direct-mcp-{}-{nonce}-{sequence}",
-            std::process::id()
-        ));
-        fs::create_dir(&root).unwrap();
-        let config = Config::new(root, BTreeMap::new(), Vec::new(), false).unwrap();
-        let root = config.root.path.clone();
-        (Arc::new(config), root)
+    pub(crate) fn direct_root() -> std::path::PathBuf {
+        TEST_ROOT
+            .get_or_init(|| {
+                let nonce = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos();
+                let root = config::test_session()
+                    .root
+                    .path
+                    .join(format!(".rivet-direct-mcp-{}-{nonce}", std::process::id()));
+                fs::create_dir_all(&root).unwrap();
+                root
+            })
+            .clone()
+    }
+
+    fn unique_file(prefix: &str) -> std::path::PathBuf {
+        let sequence = NEXT_FILE.fetch_add(1, Ordering::Relaxed);
+        direct_root().join(format!("{prefix}-{sequence}.txt"))
     }
 
     #[tokio::test]
     async fn direct_stateless_tools_list_uses_same_router() {
-        let (config, root) = direct_config();
-        let runtime = Rivet::new(config);
+        let _root = direct_root();
+        let runtime = Rivet::new();
         let request = br#"{"jsonrpc":"2.0","id":1,"method":"tools/list","params":{}}"#;
         let response = runtime.dispatch_jsonrpc(request).await.unwrap();
         let Dispatch::Response(raw) = response else {
             panic!("tools/list must return a terminal response");
         };
-        let value: serde_json::Value = serde_json::from_str(raw.get()).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         let tools = value["result"]["tools"].as_array().unwrap();
         assert!(tools.iter().any(|tool| tool["name"] == "run_command"));
         assert!(tools.iter().any(|tool| tool["name"] == "read_files"));
@@ -520,15 +509,15 @@ mod direct_tests {
                 .any(|tool| tool["name"] == "list_ready_processes")
         );
         runtime.shutdown().await;
-        fs::remove_dir_all(root).unwrap();
     }
 
     #[tokio::test]
     async fn direct_read_files_preserves_results_and_total_bound() {
-        let (config, root) = direct_config();
-        fs::write(root.join("a.txt"), "alpha").unwrap();
-        fs::write(root.join("b.txt"), "bravo").unwrap();
-        let runtime = Rivet::new(config);
+        let runtime = Rivet::new();
+        let a = unique_file("a");
+        let b = unique_file("b");
+        fs::write(&a, "alpha").unwrap();
+        fs::write(&b, "bravo").unwrap();
 
         let request = serde_json::to_vec(&json!({
             "jsonrpc": "2.0",
@@ -538,8 +527,8 @@ mod direct_tests {
                 "name": "read_files",
                 "arguments": {
                     "files": [
-                        {"path": root.join("a.txt"), "offset": 0, "limit": 5},
-                        {"path": root.join("b.txt"), "offset": 1, "limit": 3}
+                        {"path": a, "offset": 0, "limit": 5},
+                        {"path": b, "offset": 1, "limit": 3}
                     ]
                 }
             }
@@ -549,7 +538,7 @@ mod direct_tests {
         let Dispatch::Response(raw) = response else {
             panic!("read_files must return a terminal response");
         };
-        let value: serde_json::Value = serde_json::from_str(raw.get()).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         let rows = value["result"]["structuredContent"]["results"]
             .as_array()
             .unwrap();
@@ -567,8 +556,8 @@ mod direct_tests {
                 "name": "read_files",
                 "arguments": {
                     "files": [
-                        {"path": root.join("a.txt"), "limit": 3 * 1024 * 1024},
-                        {"path": root.join("b.txt"), "limit": 3 * 1024 * 1024}
+                        {"path": a, "limit": 3 * 1024 * 1024},
+                        {"path": b, "limit": 3 * 1024 * 1024}
                     ]
                 }
             }
@@ -578,26 +567,26 @@ mod direct_tests {
         let Dispatch::Response(raw) = response else {
             panic!("read_files bound failure must return a terminal response");
         };
-        let value: serde_json::Value = serde_json::from_str(raw.get()).unwrap();
+        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         assert_eq!(
             value["result"]["structuredContent"]["code"],
             "INVALID_REQUEST"
         );
 
         runtime.shutdown().await;
-        fs::remove_dir_all(root).unwrap();
+        let _ = fs::remove_file(a);
+        let _ = fs::remove_file(b);
     }
 
     #[tokio::test]
     async fn direct_notification_is_acknowledged_without_retained_session() {
-        let (config, root) = direct_config();
-        let runtime = Rivet::new(config);
+        let _root = direct_root();
+        let runtime = Rivet::new();
         let notification = br#"{"jsonrpc":"2.0","method":"notifications/initialized","params":{}}"#;
         assert!(matches!(
             runtime.dispatch_jsonrpc(notification).await.unwrap(),
             Dispatch::NotificationAck
         ));
         runtime.shutdown().await;
-        fs::remove_dir_all(root).unwrap();
     }
 }

@@ -54,7 +54,7 @@ A non-interactive example:
   --allow-command make=make
 ```
 
-`--allow-command NAME=EXECUTABLE`, `--allow-command-path PATH`, `--pass-env NAME`, and `--network` are startup capabilities. Command paths are canonicalized once at startup and grant child processes read/write access without expanding the MCP workspace root. MCP requests cannot add executables, command paths, environment variables, filesystem roots, or network access.
+`--allow-command NAME=EXECUTABLE`, `--allow-command-path PATH`, `--pass-env NAME`, and `--network` are startup capabilities. Command paths are canonicalized once at startup and grant child processes read/write access without expanding the MCP workspace root. On macOS, Unix-domain sockets beneath an allowed command path are reachable only when `--network` is also enabled. MCP requests cannot add executables, command paths, environment variables, filesystem roots, or network access.
 
 See [MCP setup](docs/mcp-setup.md) for Secure MCP Tunnel configuration.
 

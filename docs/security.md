@@ -43,7 +43,7 @@ The MCP caller cannot add executables, command host paths, environment variables
 
 - The current directory is the only workspace root.
 - Rivet filesystem tools use capability-based paths and cannot leave that workspace.
-- Repeatable `--allow-command-path PATH` grants child commands read/write access to exact canonical host paths without adding MCP roots or allowing `cwd` outside the workspace.
+- Repeatable `--allow-command-path PATH` grants child commands read/write access to exact canonical host paths without adding MCP roots or allowing `cwd` outside the workspace. On macOS, Unix-domain socket connections under those paths are permitted only when `--network` is also granted; offline sessions receive no socket-path network rule.
 - Every child command is OS-sandboxed before execution. There is no unsandboxed command-execution mode.
 - macOS uses `/usr/bin/sandbox-exec` (Seatbelt).
 - Linux and WSL2 use `bubblewrap`. Ubuntu 24.04 requires the distro `bwrap-userns-restrict` AppArmor profile for unprivileged user namespaces.
