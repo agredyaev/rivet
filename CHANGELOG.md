@@ -2,6 +2,20 @@
 
 This file records released versions. Historical entries describe those versions; see the README and `docs/` for the current source's interface.
 
+## [1.2.0](https://github.com/agredyaev/rivet/compare/v1.1.0...v1.2.0) (2026-10-26)
+
+
+### Features
+
+* allow explicit child command paths ([7027c36](https://github.com/agredyaev/rivet/commit/7027c36fefd806634b8d3bbd1c1666a69fb96877))
+* allow explicit child command paths ([ff6ba9e](https://github.com/agredyaev/rivet/commit/ff6ba9e02125b64ebfe110815cbdca846654f14e))
+
+
+### Bug Fixes
+
+* sync fuzz lockfile ([f9fbbbf](https://github.com/agredyaev/rivet/commit/f9fbbbf1bb19bb76d66a06a551b476a768e12ba0))
+* update tokio and rustls-webpki ([abf82c5](https://github.com/agredyaev/rivet/commit/abf82c5ea66778d00bd1ee9e3397c7294c0c4a54))
+
 ## [1.1.0](https://github.com/agredyaev/rivet/compare/v1.0.0...v1.1.0) (2026-10-16)
 
 
