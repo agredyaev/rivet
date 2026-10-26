@@ -855,7 +855,10 @@ mod tests {
         );
         let allowed = seatbelt_literal(&allowed_dir);
         let denied = seatbelt_literal(&denied_dir);
-        let socket_grant = format!("(allow network-outbound (subpath \"{allowed}\"))");
+        let socket_family_grant = "(allow system-socket (socket-domain AF_UNIX))";
+        let socket_grant =
+            format!("(allow network-outbound (remote unix-socket (subpath \"{allowed}\")))");
+        assert!(network_profile.contains(socket_family_grant));
         assert!(network_profile.contains(&socket_grant));
         assert!(!network_profile.contains(&denied));
 
@@ -865,7 +868,12 @@ mod tests {
             std::slice::from_ref(&allowed_dir),
             false,
         );
+        assert!(!offline_profile.contains(socket_family_grant));
         assert!(!offline_profile.contains(&socket_grant));
+
+        let network_without_paths =
+            macos_profile(Path::new("/bin/cat"), &workspace, &[], true);
+        assert!(!network_without_paths.contains(socket_family_grant));
 
         fs::remove_dir_all(base).unwrap();
     }
@@ -1046,10 +1054,12 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let socket_dir = PathBuf::from(format!(
-            "/private/tmp/rivet-unix-socket-test-{}-{nonce}",
-            std::process::id()
-        ));
+        let socket_dir = home_dir()
+            .expect("HOME is required by the macOS sandbox test")
+            .join(format!(
+                ".rivet-unix-socket-test-{}-{nonce}",
+                std::process::id()
+            ));
         fs::create_dir_all(&socket_dir).unwrap();
         let socket_path = socket_dir.join("docker.sock");
         let _listener = UnixListener::bind(&socket_path).unwrap();
