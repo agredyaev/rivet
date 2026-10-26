@@ -2,6 +2,14 @@
 
 This file records released versions. Historical entries describe those versions; see the README and `docs/` for the current source's interface.
 
+## [1.4.0](https://github.com/agredyaev/rivet/compare/v1.3.0...v1.4.0) (2026-10-26)
+
+
+### Bug Fixes
+
+* grant macos AF_UNIX command path access ([eaf2010](https://github.com/agredyaev/rivet/commit/eaf201082fbcf7b109de176653bde61ee5ce3bb4))
+* grant macOS AF_UNIX command path access ([661abaf](https://github.com/agredyaev/rivet/commit/661abafa03e926f0e237803773ed62d0a4f3649d))
+
 ## [1.3.0](https://github.com/agredyaev/rivet/compare/v1.2.0...v1.3.0) (2026-10-26)
 
 
