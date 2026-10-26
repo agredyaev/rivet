@@ -1,16 +1,15 @@
 //! Embedded defaults and startup scope validation.
 //!
-//! Session capabilities are resolved once at startup. The runtime retains one
-//! validated workspace root, explicit child-command host paths, resolved
-//! executables, and environment values selected by the operator.
+//! Session capabilities are resolved once at startup. Runtime state is stored
+//! in flat parallel arrays and addressed by dense command IDs.
 use cap_std::{ambient_authority, fs::Dir};
 use std::{
-    collections::BTreeMap,
     env,
     ffi::{CString, OsString},
     fs,
     os::{fd::AsRawFd, unix::fs::PermissionsExt},
     path::{Path, PathBuf},
+    sync::OnceLock,
 };
 
 pub const PROCESS_RETENTION_SLOTS: usize = 32;
@@ -41,25 +40,27 @@ pub struct Root {
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub struct CommandId(u16);
 
-impl CommandId {
-    pub const ZERO: Self = Self(0);
+pub const COMMAND_ID_ZERO: CommandId = CommandId(0);
+
+#[inline]
+pub const fn command_index(id: CommandId) -> usize {
+    id.0 as usize
 }
 
-pub struct CommandEntry {
-    pub name: String,
-    pub path: PathBuf,
-}
+static SESSION_CONFIG: OnceLock<Config> = OnceLock::new();
 
 pub struct Config {
     pub root: Root,
-    pub command_paths: Box<[PathBuf]>,
-    pub commands: Box<[CommandEntry]>,
-    pub pass_env: Box<[(String, OsString)]>,
+    pub command_name: Vec<String>,
+    pub command_executable: Vec<PathBuf>,
+    pub env_name: Vec<String>,
+    pub env_value: Vec<OsString>,
+    pub command_path_grant: Vec<PathBuf>,
     pub runtime_path: Option<OsString>,
     pub network: bool,
 }
 
-fn env_name(name: &str) -> bool {
+fn env_name_valid(name: &str) -> bool {
     !name.is_empty() && !name.contains(['=', '\0'])
 }
 
@@ -93,8 +94,6 @@ pub(crate) fn executable(input: &str) -> Result<PathBuf, String> {
             && let Ok(meta) = fs::metadata(&canonical)
             && executable_file(&meta)
         {
-            // Keep the resolved path's final component: tools such as rustup
-            // select proxy behavior from argv[0] (for example, cargo).
             return Ok(path);
         }
     }
@@ -145,113 +144,171 @@ fn root(path: PathBuf) -> Result<Root, String> {
     })
 }
 
-impl Config {
-    #[cfg(test)]
-    pub fn new(
-        workspace: PathBuf,
-        command_specs: BTreeMap<String, String>,
-        pass_env_names: Vec<String>,
-        network: bool,
-    ) -> Result<Self, String> {
-        Self::new_with_command_paths(
-            workspace,
-            command_specs,
-            pass_env_names,
+pub fn install(config: Config) -> Result<(), String> {
+    SESSION_CONFIG
+        .set(config)
+        .map_err(|_| "session config is already installed".to_owned())
+}
+
+pub fn session() -> &'static Config {
+    SESSION_CONFIG
+        .get()
+        .expect("session config must be installed before serving MCP")
+}
+
+#[cfg(test)]
+pub fn test_session() -> &'static Config {
+    SESSION_CONFIG.get_or_init(|| {
+        build_test_config(
+            env::current_dir().expect("test current directory"),
             Vec::new(),
-            network,
+            Vec::new(),
+            Vec::new(),
+            false,
         )
-    }
+        .expect("test session config")
+    })
+}
 
-    pub fn new_with_command_paths(
-        workspace: PathBuf,
-        command_specs: BTreeMap<String, String>,
-        pass_env_names: Vec<String>,
-        command_path_specs: Vec<PathBuf>,
-        network: bool,
-    ) -> Result<Self, String> {
-        let root = root(workspace)?;
-
-        let mut command_paths = Vec::with_capacity(command_path_specs.len());
-        for path in command_path_specs {
-            if !path.is_absolute() {
-                return Err(format!(
-                    "--allow-command-path requires an absolute path: {}",
-                    path.display()
-                ));
-            }
-            let canonical =
-                fs::canonicalize(&path).map_err(|error| format!("{}: {error}", path.display()))?;
-            command_paths.push(canonical);
+fn sort_commands(command_name: &mut [String], command_executable: &mut [PathBuf]) {
+    for right in 1..command_name.len() {
+        let mut index = right;
+        while index > 0 && command_name[index] < command_name[index - 1] {
+            command_name.swap(index, index - 1);
+            command_executable.swap(index, index - 1);
+            index -= 1;
         }
-        command_paths.sort_unstable();
-        command_paths.dedup();
-
-        if command_specs.len() > u16::MAX as usize + 1 {
-            return Err("too many registered commands".into());
-        }
-        let mut commands = Vec::with_capacity(command_specs.len());
-        for (name, executable_name) in command_specs {
-            if name.is_empty() || name.contains(char::is_whitespace) || name.contains('=') {
-                return Err(format!("invalid command name: {name:?}"));
-            }
-            commands.push(CommandEntry {
-                name,
-                path: executable(&executable_name)?,
-            });
-        }
-
-        let mut pass_env = Vec::with_capacity(pass_env_names.len());
-        for name in pass_env_names {
-            if !env_name(&name) {
-                return Err(format!("invalid environment name: {name:?}"));
-            }
-            if reserved_env(&name) {
-                return Err(format!("{name}: environment name is reserved by Rivet"));
-            }
-            if pass_env.iter().any(|(existing, _)| existing == &name) {
-                return Err(format!("duplicate --pass-env {name}"));
-            }
-            let value = env::var_os(&name)
-                .ok_or_else(|| format!("{name}: parent environment variable is not set"))?;
-            pass_env.push((name, value));
-        }
-
-        Ok(Self {
-            root,
-            command_paths: command_paths.into_boxed_slice(),
-            commands: commands.into_boxed_slice(),
-            pass_env: pass_env.into_boxed_slice(),
-            runtime_path: env::var_os("PATH"),
-            network,
-        })
     }
+}
 
-    pub fn command(&self, name: &str) -> Option<(CommandId, &CommandEntry)> {
-        let index = self
-            .commands
-            .binary_search_by(|entry| entry.name.as_str().cmp(name))
-            .ok()?;
-        Some((CommandId(index as u16), &self.commands[index]))
-    }
+#[cfg(test)]
+pub fn build_test_config(
+    workspace: PathBuf,
+    command_name: Vec<String>,
+    command_executable: Vec<String>,
+    pass_env_names: Vec<String>,
+    network: bool,
+) -> Result<Config, String> {
+    build_config(
+        workspace,
+        command_name,
+        command_executable,
+        pass_env_names,
+        Vec::new(),
+        network,
+    )
+}
 
-    pub fn command_name(&self, id: CommandId) -> &str {
-        &self.commands[id.0 as usize].name
-    }
+pub fn build_config(
+    workspace: PathBuf,
+    mut command_name: Vec<String>,
+    command_executable_spec: Vec<String>,
+    pass_env_names: Vec<String>,
+    command_path_specs: Vec<PathBuf>,
+    network: bool,
+) -> Result<Config, String> {
+    let root = root(workspace)?;
 
-    pub fn root_for<'a>(&'a self, path: &'a Path) -> Option<(&'a Root, &'a Path)> {
+    let mut command_path_grant = Vec::with_capacity(command_path_specs.len());
+    for path in command_path_specs {
         if !path.is_absolute() {
-            return None;
+            return Err(format!(
+                "--allow-command-path requires an absolute path: {}",
+                path.display()
+            ));
         }
-        rivet::path_policy::relative_under(&self.root.path, path)
-            .map(|relative| (&self.root, relative))
+        let canonical =
+            fs::canonicalize(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+        command_path_grant.push(canonical);
     }
+    command_path_grant.sort_unstable();
+    command_path_grant.dedup();
+
+    if command_name.len() != command_executable_spec.len() {
+        return Err("command name/executable arrays have different lengths".into());
+    }
+    if command_name.len() > u16::MAX as usize + 1 {
+        return Err("too many registered commands".into());
+    }
+
+    let mut command_executable = Vec::with_capacity(command_name.len());
+    for index in 0..command_name.len() {
+        let name = &command_name[index];
+        if name.is_empty() || name.contains(char::is_whitespace) || name.contains('=') {
+            return Err(format!("invalid command name: {name:?}"));
+        }
+        command_executable.push(executable(&command_executable_spec[index])?);
+    }
+    sort_commands(&mut command_name, &mut command_executable);
+    for index in 1..command_name.len() {
+        if command_name[index - 1] == command_name[index] {
+            return Err(format!(
+                "duplicate --allow-command for {}",
+                command_name[index]
+            ));
+        }
+    }
+
+    let mut env_name = Vec::with_capacity(pass_env_names.len());
+    let mut env_value = Vec::with_capacity(pass_env_names.len());
+    for name in pass_env_names {
+        if !env_name_valid(&name) {
+            return Err(format!("invalid environment name: {name:?}"));
+        }
+        if reserved_env(&name) {
+            return Err(format!("{name}: environment name is reserved by Rivet"));
+        }
+        if env_name.iter().any(|existing| existing == &name) {
+            return Err(format!("duplicate --pass-env {name}"));
+        }
+        let value = env::var_os(&name)
+            .ok_or_else(|| format!("{name}: parent environment variable is not set"))?;
+        env_name.push(name);
+        env_value.push(value);
+    }
+
+    Ok(Config {
+        root,
+        command_name,
+        command_executable,
+        env_name,
+        env_value,
+        command_path_grant,
+        runtime_path: env::var_os("PATH"),
+        network,
+    })
+}
+
+pub fn command_id(config: &Config, name: &str) -> Option<CommandId> {
+    let index = config
+        .command_name
+        .binary_search_by(|entry| entry.as_str().cmp(name))
+        .ok()?;
+    Some(CommandId(index as u16))
+}
+
+#[inline]
+pub fn command_name(config: &Config, id: CommandId) -> &str {
+    &config.command_name[command_index(id)]
+}
+
+#[inline]
+pub fn command_executable(config: &Config, id: CommandId) -> &Path {
+    &config.command_executable[command_index(id)]
+}
+
+pub fn root_for<'a>(config: &'a Config, path: &'a Path) -> Option<(&'a Root, &'a Path)> {
+    if !path.is_absolute() {
+        return None;
+    }
+    rivet::path_policy::relative_under(&config.root.path, path)
+        .map(|relative| (&config.root, relative))
 }
 
 #[cfg(all(test, unix))]
 mod tests {
-    use super::{Config, executable};
+    use super::{build_config, build_test_config, command_id, command_name, executable, root_for};
     use std::{
-        collections::BTreeMap,
         fs,
         os::unix::fs::{PermissionsExt, symlink},
         process::Command,
@@ -293,26 +350,25 @@ mod tests {
     }
 
     #[test]
-    fn session_state_is_single_root_and_sorted_commands() {
+    fn session_state_is_sorted_parallel_command_arrays() {
         let root = temp_root("session");
-        let mut commands = BTreeMap::new();
-        commands.insert("zeta".into(), "/bin/echo".into());
-        commands.insert("alpha".into(), "/bin/echo".into());
+        let config = build_test_config(
+            root.clone(),
+            vec!["zeta".into(), "alpha".into()],
+            vec!["/bin/echo".into(), "/bin/echo".into()],
+            Vec::new(),
+            false,
+        )
+        .unwrap();
 
-        let config = Config::new(root.clone(), commands, Vec::new(), false).unwrap();
         assert_eq!(config.root.path, root.canonicalize().unwrap());
-        assert_eq!(
-            config
-                .commands
-                .iter()
-                .map(|entry| entry.name.as_str())
-                .collect::<Vec<_>>(),
-            ["alpha", "zeta"]
-        );
-        let (alpha, _) = config.command("alpha").unwrap();
-        let (zeta, _) = config.command("zeta").unwrap();
-        assert_eq!(config.command_name(alpha), "alpha");
-        assert_eq!(config.command_name(zeta), "zeta");
+        assert_eq!(config.command_name, ["alpha", "zeta"]);
+        assert_eq!(config.command_name.len(), config.command_executable.len());
+
+        let alpha = command_id(&config, "alpha").unwrap();
+        let zeta = command_id(&config, "zeta").unwrap();
+        assert_eq!(command_name(&config, alpha), "alpha");
+        assert_eq!(command_name(&config, zeta), "zeta");
         assert_ne!(alpha.0, zeta.0);
         assert!(!config.network);
 
@@ -325,9 +381,10 @@ mod tests {
         let extra_a = temp_root("command-path-a");
         let extra_b = temp_root("command-path-b");
 
-        let config = Config::new_with_command_paths(
+        let config = build_config(
             root.clone(),
-            BTreeMap::new(),
+            Vec::new(),
+            Vec::new(),
             Vec::new(),
             vec![extra_b.clone(), extra_a.clone(), extra_a.clone()],
             false,
@@ -335,17 +392,13 @@ mod tests {
         .unwrap();
 
         assert_eq!(
-            config.command_paths.as_ref(),
+            config.command_path_grant,
             [
                 extra_a.canonicalize().unwrap(),
                 extra_b.canonicalize().unwrap()
             ]
         );
-        assert!(
-            config
-                .root_for(&extra_a.join("outside-workspace"))
-                .is_none()
-        );
+        assert!(root_for(&config, &extra_a.join("outside-workspace")).is_none());
 
         fs::remove_dir_all(root).unwrap();
         fs::remove_dir_all(extra_a).unwrap();
@@ -356,9 +409,10 @@ mod tests {
     fn command_paths_reject_relative_and_missing_paths() {
         let root = temp_root("command-path-invalid");
 
-        let relative = Config::new_with_command_paths(
+        let relative = build_config(
             root.clone(),
-            BTreeMap::new(),
+            Vec::new(),
+            Vec::new(),
             Vec::new(),
             vec![std::path::PathBuf::from("relative")],
             false,
@@ -368,9 +422,10 @@ mod tests {
         assert!(relative.contains("absolute"));
 
         let missing_path = root.join("missing");
-        let missing = Config::new_with_command_paths(
+        let missing = build_config(
             root.clone(),
-            BTreeMap::new(),
+            Vec::new(),
+            Vec::new(),
             Vec::new(),
             vec![missing_path.clone()],
             false,
@@ -385,16 +440,23 @@ mod tests {
     #[test]
     fn pass_env_rejects_reserved_and_missing_names() {
         let root = temp_root("env");
-        let reserved = Config::new(root.clone(), BTreeMap::new(), vec!["HOME".into()], false)
-            .err()
-            .unwrap();
+        let reserved = build_test_config(
+            root.clone(),
+            Vec::new(),
+            Vec::new(),
+            vec!["HOME".into()],
+            false,
+        )
+        .err()
+        .unwrap();
         assert!(reserved.contains("reserved"));
 
         let missing_name = format!("RIVET_TEST_MISSING_{}", std::process::id());
         unsafe { std::env::remove_var(&missing_name) };
-        let missing = Config::new(
+        let missing = build_test_config(
             root.clone(),
-            BTreeMap::new(),
+            Vec::new(),
+            Vec::new(),
             vec![missing_name.clone()],
             false,
         )
@@ -405,22 +467,30 @@ mod tests {
 
         fs::remove_dir_all(root).unwrap();
     }
+
     #[test]
     fn pass_env_is_captured_once_and_duplicates_fail() {
         let root = temp_root("env-snapshot");
         let name = format!("RIVET_TEST_ENV_{}", std::process::id());
         unsafe { std::env::set_var(&name, "first") };
 
-        let config = Config::new(root.clone(), BTreeMap::new(), vec![name.clone()], false).unwrap();
+        let config = build_test_config(
+            root.clone(),
+            Vec::new(),
+            Vec::new(),
+            vec![name.clone()],
+            false,
+        )
+        .unwrap();
         unsafe { std::env::set_var(&name, "second") };
 
-        assert_eq!(config.pass_env.len(), 1);
-        assert_eq!(config.pass_env[0].0, name);
-        assert_eq!(config.pass_env[0].1, std::ffi::OsString::from("first"));
+        assert_eq!(config.env_name.as_slice(), std::slice::from_ref(&name));
+        assert_eq!(config.env_value, [std::ffi::OsString::from("first")]);
 
-        let duplicate = Config::new(
+        let duplicate = build_test_config(
             root.clone(),
-            BTreeMap::new(),
+            Vec::new(),
+            Vec::new(),
             vec![name.clone(), name.clone()],
             false,
         )

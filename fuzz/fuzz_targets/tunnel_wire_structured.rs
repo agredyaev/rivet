@@ -87,7 +87,7 @@ fuzz_target!(|data: &[u8]| {
 
     let envelope = parse_poll(&body).unwrap();
     assert_eq!(envelope.commands.len(), 1);
-    let parsed = parse_command(envelope.commands[0].as_ref()).unwrap();
+    let parsed = parse_command(envelope.commands[0].get().as_bytes()).unwrap();
 
     assert_eq!(parsed.request_id, request_id);
     assert_eq!(parsed.shard_token, shard_token);
@@ -106,13 +106,7 @@ fuzz_target!(|data: &[u8]| {
         expected_timeout(timeout_number, timeout_unit)
     );
     let expected_id = (!id.is_null()).then_some(id);
-    assert_eq!(
-        parsed
-            .jsonrpc
-            .as_deref()
-            .and_then(extract_jsonrpc_id),
-        expected_id
-    );
+    assert_eq!(parsed.jsonrpc.and_then(extract_jsonrpc_id), expected_id);
 
     let id_part = tunnel_part(next(&mut input));
     assert!(valid_tunnel_id(&format!("tunnel_{id_part}")));

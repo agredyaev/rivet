@@ -9,7 +9,7 @@ use serde_json::value::RawValue;
 fuzz_target!(|data: &[u8]| {
     if let Ok(envelope) = parse_poll(data) {
         for raw in envelope.commands {
-            if let Ok(command) = parse_command(raw.as_ref()) {
+            if let Ok(command) = parse_command(raw.get().as_bytes()) {
                 if let Some(timeout) = command.response_timeout.as_ref() {
                     let _ = parse_response_timeout(timeout);
                 }
@@ -24,7 +24,7 @@ fuzz_target!(|data: &[u8]| {
         let _ = valid_tunnel_id(text);
     }
 
-    if let Ok(raw) = serde_json::from_slice::<Box<RawValue>>(data) {
-        let _ = extract_jsonrpc_id(raw.as_ref());
+    if let Ok(raw) = serde_json::from_slice::<&RawValue>(data) {
+        let _ = extract_jsonrpc_id(raw);
     }
 });

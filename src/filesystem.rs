@@ -3,7 +3,7 @@
 //! Paths are opened relative to the configured directory capabilities. Writes
 //! reject final symlinks; overwrites stage a complete file before installing it.
 use crate::{
-    config::{Config, MAX_DIRECTORY_ENTRIES, MAX_TEXT_BYTES},
+    config::{Config, MAX_DIRECTORY_ENTRIES, MAX_TEXT_BYTES, root_for},
     mcp::Fault,
 };
 use cap_std::fs::{Dir, OpenOptions, OpenOptionsExt};
@@ -69,8 +69,7 @@ fn io_error(message: &str, error: std::io::Error) -> Fault {
 }
 
 fn target<'a>(config: &'a Config, input: &'a str) -> Result<(&'a Dir, &'a Path), Fault> {
-    let (root, relative) = config
-        .root_for(Path::new(input))
+    let (root, relative) = root_for(config, Path::new(input))
         .ok_or_else(|| path_error("path is outside allowed roots or is not absolute"))?;
     Ok((&root.dir, relative))
 }

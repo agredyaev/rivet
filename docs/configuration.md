@@ -19,7 +19,7 @@ rivet session \
 ```
 
 - `--allow-command NAME=EXECUTABLE` registers one executable. Repeat it for additional executables. The executable is resolved at startup.
-- `--allow-command-path PATH` grants sandboxed child commands read/write access to one existing absolute host path. Repeat it for additional paths. Paths are canonicalized, sorted, and deduplicated at startup. They do not become MCP filesystem roots and cannot be used as command `cwd` unless they are also inside the workspace.
+- `--allow-command-path PATH` grants sandboxed child commands read/write access to one existing absolute host path. Repeat it for additional paths. Paths are canonicalized, sorted, and deduplicated at startup. They do not become MCP filesystem roots and cannot be used as command `cwd` unless they are also inside the workspace. On macOS, Unix-domain sockets beneath the granted path require `--network`; Rivet emits a path-scoped `network-outbound` rule only when both capabilities are present.
 - `--pass-env NAME` captures one existing parent environment variable for child commands. Repeat it for additional variables.
 - `--network` enables child network access. Network access is denied by default.
 
