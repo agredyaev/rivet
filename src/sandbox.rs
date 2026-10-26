@@ -392,8 +392,13 @@ fn macos_profile(
             "(allow file-read* file-write* ({filter} \"{literal}\"))\n"
         ));
         if network {
+            let socket_filter = if path.is_dir() {
+                format!("(subpath \"{literal}\")")
+            } else {
+                format!("(path-literal \"{literal}\")")
+            };
             profile.push_str(&format!(
-                "(allow network-outbound ({filter} \"{literal}\"))\n"
+                "(allow network-outbound (remote unix-socket {socket_filter}))\n"
             ));
         }
     }
@@ -855,7 +860,8 @@ mod tests {
         );
         let allowed = seatbelt_literal(&allowed_dir);
         let denied = seatbelt_literal(&denied_dir);
-        let socket_grant = format!("(allow network-outbound (subpath \"{allowed}\"))");
+        let socket_grant =
+            format!("(allow network-outbound (remote unix-socket (subpath \"{allowed}\")))");
         assert!(network_profile.contains(&socket_grant));
         assert!(!network_profile.contains(&denied));
 
@@ -1046,10 +1052,12 @@ mod tests {
             .duration_since(UNIX_EPOCH)
             .unwrap()
             .as_nanos();
-        let socket_dir = PathBuf::from(format!(
-            "/private/tmp/rivet-unix-socket-test-{}-{nonce}",
-            std::process::id()
-        ));
+        let socket_dir = home_dir()
+            .expect("HOME is required by the macOS sandbox test")
+            .join(format!(
+                ".rivet-unix-socket-test-{}-{nonce}",
+                std::process::id()
+            ));
         fs::create_dir_all(&socket_dir).unwrap();
         let socket_path = socket_dir.join("docker.sock");
         let _listener = UnixListener::bind(&socket_path).unwrap();
