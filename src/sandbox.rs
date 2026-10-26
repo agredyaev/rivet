@@ -377,6 +377,9 @@ fn macos_profile(
   (global-name \"com.apple.networkd\")\n\
   (global-name \"com.apple.trustd.agent\"))\n",
         );
+        if !command_paths.is_empty() {
+            profile.push_str("(allow system-socket (socket-domain AF_UNIX))\n");
+        }
     }
 
     profile.push_str(&allow_read_rule(&workspace));
@@ -392,8 +395,13 @@ fn macos_profile(
             "(allow file-read* file-write* ({filter} \"{literal}\"))\n"
         ));
         if network {
+            let socket_filter = if path.is_dir() {
+                format!("(subpath \"{literal}\")")
+            } else {
+                format!("(path-literal \"{literal}\")")
+            };
             profile.push_str(&format!(
-                "(allow network-outbound ({filter} \"{literal}\"))\n"
+                "(allow network-outbound (remote unix-socket {socket_filter}))\n"
             ));
         }
     }
@@ -871,8 +879,7 @@ mod tests {
         assert!(!offline_profile.contains(socket_family_grant));
         assert!(!offline_profile.contains(&socket_grant));
 
-        let network_without_paths =
-            macos_profile(Path::new("/bin/cat"), &workspace, &[], true);
+        let network_without_paths = macos_profile(Path::new("/bin/cat"), &workspace, &[], true);
         assert!(!network_without_paths.contains(socket_family_grant));
 
         fs::remove_dir_all(base).unwrap();
