@@ -39,7 +39,7 @@ cd /path/to/project
 /absolute/path/to/extracted-package/bin/rivet session
 ```
 
-The current directory is the only workspace root. Child network access is disabled by default.
+The current directory is the only workspace root. Child network access is disabled by default. Extra host paths can be granted to sandboxed child commands with repeatable `--allow-command-path PATH`; those paths do not become MCP filesystem roots or valid command working directories.
 
 A non-interactive example:
 
@@ -47,13 +47,14 @@ A non-interactive example:
 /absolute/path/to/extracted-package/bin/rivet session \
   --network \
   --pass-env FRED_API_KEY \
+  --allow-command-path "$HOME/.rustup" \
   --allow-command uv=uv \
   --allow-command git=git \
   --allow-command cargo=cargo \
   --allow-command make=make
 ```
 
-`--allow-command NAME=EXECUTABLE`, `--pass-env NAME`, and `--network` are startup capabilities. MCP requests cannot add executables, environment variables, filesystem roots, or network access.
+`--allow-command NAME=EXECUTABLE`, `--allow-command-path PATH`, `--pass-env NAME`, and `--network` are startup capabilities. Command paths are canonicalized once at startup and grant child processes read/write access without expanding the MCP workspace root. MCP requests cannot add executables, command paths, environment variables, filesystem roots, or network access.
 
 See [MCP setup](docs/mcp-setup.md) for Secure MCP Tunnel configuration.
 

@@ -3,7 +3,7 @@ use std::{
     collections::BTreeMap,
     env,
     io::{self, BufRead, IsTerminal, Write},
-    path::Path,
+    path::{Path, PathBuf},
     process::ExitCode,
     sync::Arc,
 };
@@ -209,6 +209,13 @@ fn print_scope<W: Write>(output: &mut W, config: &Config, color: bool) -> io::Re
             "disabled"
         }
     )?;
+    if config.command_paths.is_empty() {
+        writeln!(output, "  {check} Command paths: none")?;
+    } else {
+        for path in &config.command_paths {
+            writeln!(output, "  {check} Command path: {}", path.display())?;
+        }
+    }
     if config.pass_env.is_empty() {
         writeln!(output, "  {check} Environment passthrough: none")?;
     } else {
@@ -235,11 +242,12 @@ fn print_scope<W: Write>(output: &mut W, config: &Config, color: bool) -> io::Re
     Ok(())
 }
 
-type ParsedArgs = (BTreeMap<String, String>, Vec<String>, bool);
+type ParsedArgs = (BTreeMap<String, String>, Vec<String>, Vec<PathBuf>, bool);
 
 fn parse_args(args: Vec<String>) -> Result<ParsedArgs, String> {
     let mut commands = BTreeMap::new();
     let mut pass_env = Vec::new();
+    let mut command_paths = Vec::new();
     let mut network = false;
     let mut iter = args.into_iter();
 
@@ -256,6 +264,11 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs, String> {
                     return Err(format!("duplicate --allow-command for {name}"));
                 }
             }
+            "--allow-command-path" => {
+                command_paths.push(PathBuf::from(
+                    iter.next().ok_or("--allow-command-path requires PATH")?,
+                ));
+            }
             "--pass-env" => {
                 pass_env.push(iter.next().ok_or("--pass-env requires NAME")?);
             }
@@ -263,7 +276,7 @@ fn parse_args(args: Vec<String>) -> Result<ParsedArgs, String> {
         }
     }
 
-    Ok((commands, pass_env, network))
+    Ok((commands, pass_env, command_paths, network))
 }
 
 pub async fn run(args: Vec<String>) -> ExitCode {
@@ -272,7 +285,7 @@ pub async fn run(args: Vec<String>) -> ExitCode {
         return ExitCode::SUCCESS;
     }
 
-    let (mut commands, mut pass_env, mut network) = match parse_args(args) {
+    let (mut commands, mut pass_env, command_paths, mut network) = match parse_args(args) {
         Ok(parsed) => parsed,
         Err(error) => {
             eprintln!("{error}");
@@ -325,13 +338,14 @@ pub async fn run(args: Vec<String>) -> ExitCode {
         }
     }
 
-    let config = match Config::new(cwd, commands, pass_env, network) {
-        Ok(config) => Arc::new(config),
-        Err(error) => {
-            eprintln!("STARTUP_ERROR: {error}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let config =
+        match Config::new_with_command_paths(cwd, commands, pass_env, command_paths, network) {
+            Ok(config) => Arc::new(config),
+            Err(error) => {
+                eprintln!("STARTUP_ERROR: {error}");
+                return ExitCode::FAILURE;
+            }
+        };
 
     if let Err(error) = crate::sandbox::doctor() {
         eprintln!("SANDBOX_ERROR: {error}");
@@ -396,17 +410,28 @@ mod tests {
     }
 
     #[test]
-    fn args_have_one_command_policy_and_explicit_env_names() {
-        let (commands, pass_env, network) = parse_args(vec![
+    fn args_have_one_command_policy_explicit_paths_and_env_names() {
+        let (commands, pass_env, command_paths, network) = parse_args(vec![
             "--network".into(),
             "--allow-command".into(),
             "shell=/bin/sh".into(),
+            "--allow-command-path".into(),
+            "/tmp/tool-state-a".into(),
+            "--allow-command-path".into(),
+            "/tmp/tool-state-b".into(),
             "--pass-env".into(),
             "TOKEN".into(),
         ])
         .unwrap();
         assert_eq!(commands.get("shell").map(String::as_str), Some("/bin/sh"));
         assert_eq!(pass_env, ["TOKEN"]);
+        assert_eq!(
+            command_paths,
+            [
+                std::path::PathBuf::from("/tmp/tool-state-a"),
+                std::path::PathBuf::from("/tmp/tool-state-b")
+            ]
+        );
         assert!(network);
 
         let error = parse_args(vec!["--allow-subcommand".into(), "shell=-c".into()])

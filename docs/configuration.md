@@ -8,16 +8,18 @@ Run `rivet --version` to print the binary version, `rivet --help` for the comman
 
 Child commands always run inside the native OS sandbox.
 
-The operator may grant three capabilities at startup:
+The operator may grant four capabilities at startup:
 
 ```sh
 rivet session \
   --allow-command git=git \
+  --allow-command-path "$HOME/.rustup" \
   --pass-env FRED_API_KEY \
   --network
 ```
 
 - `--allow-command NAME=EXECUTABLE` registers one executable. Repeat it for additional executables. The executable is resolved at startup.
+- `--allow-command-path PATH` grants sandboxed child commands read/write access to one existing absolute host path. Repeat it for additional paths. Paths are canonicalized, sorted, and deduplicated at startup. They do not become MCP filesystem roots and cannot be used as command `cwd` unless they are also inside the workspace.
 - `--pass-env NAME` captures one existing parent environment variable for child commands. Repeat it for additional variables.
 - `--network` enables child network access. Network access is denied by default.
 

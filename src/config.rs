@@ -1,8 +1,8 @@
 //! Embedded defaults and startup scope validation.
 //!
 //! Session capabilities are resolved once at startup. The runtime retains one
-//! validated workspace root, resolved executables, and explicit environment
-//! values selected by the operator.
+//! validated workspace root, explicit child-command host paths, resolved
+//! executables, and environment values selected by the operator.
 use cap_std::{ambient_authority, fs::Dir};
 use std::{
     collections::BTreeMap,
@@ -52,6 +52,7 @@ pub struct CommandEntry {
 
 pub struct Config {
     pub root: Root,
+    pub command_paths: Box<[PathBuf]>,
     pub commands: Box<[CommandEntry]>,
     pub pass_env: Box<[(String, OsString)]>,
     pub runtime_path: Option<OsString>,
@@ -145,13 +146,45 @@ fn root(path: PathBuf) -> Result<Root, String> {
 }
 
 impl Config {
+    #[cfg(test)]
     pub fn new(
         workspace: PathBuf,
         command_specs: BTreeMap<String, String>,
         pass_env_names: Vec<String>,
         network: bool,
     ) -> Result<Self, String> {
+        Self::new_with_command_paths(
+            workspace,
+            command_specs,
+            pass_env_names,
+            Vec::new(),
+            network,
+        )
+    }
+
+    pub fn new_with_command_paths(
+        workspace: PathBuf,
+        command_specs: BTreeMap<String, String>,
+        pass_env_names: Vec<String>,
+        command_path_specs: Vec<PathBuf>,
+        network: bool,
+    ) -> Result<Self, String> {
         let root = root(workspace)?;
+
+        let mut command_paths = Vec::with_capacity(command_path_specs.len());
+        for path in command_path_specs {
+            if !path.is_absolute() {
+                return Err(format!(
+                    "--allow-command-path requires an absolute path: {}",
+                    path.display()
+                ));
+            }
+            let canonical =
+                fs::canonicalize(&path).map_err(|error| format!("{}: {error}", path.display()))?;
+            command_paths.push(canonical);
+        }
+        command_paths.sort_unstable();
+        command_paths.dedup();
 
         if command_specs.len() > u16::MAX as usize + 1 {
             return Err("too many registered commands".into());
@@ -185,6 +218,7 @@ impl Config {
 
         Ok(Self {
             root,
+            command_paths: command_paths.into_boxed_slice(),
             commands: commands.into_boxed_slice(),
             pass_env: pass_env.into_boxed_slice(),
             runtime_path: env::var_os("PATH"),
@@ -281,6 +315,69 @@ mod tests {
         assert_eq!(config.command_name(zeta), "zeta");
         assert_ne!(alpha.0, zeta.0);
         assert!(!config.network);
+
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn command_paths_are_canonicalized_sorted_and_do_not_expand_workspace_root() {
+        let root = temp_root("command-path-workspace");
+        let extra_a = temp_root("command-path-a");
+        let extra_b = temp_root("command-path-b");
+
+        let config = Config::new_with_command_paths(
+            root.clone(),
+            BTreeMap::new(),
+            Vec::new(),
+            vec![extra_b.clone(), extra_a.clone(), extra_a.clone()],
+            false,
+        )
+        .unwrap();
+
+        assert_eq!(
+            config.command_paths.as_ref(),
+            [
+                extra_a.canonicalize().unwrap(),
+                extra_b.canonicalize().unwrap()
+            ]
+        );
+        assert!(
+            config
+                .root_for(&extra_a.join("outside-workspace"))
+                .is_none()
+        );
+
+        fs::remove_dir_all(root).unwrap();
+        fs::remove_dir_all(extra_a).unwrap();
+        fs::remove_dir_all(extra_b).unwrap();
+    }
+
+    #[test]
+    fn command_paths_reject_relative_and_missing_paths() {
+        let root = temp_root("command-path-invalid");
+
+        let relative = Config::new_with_command_paths(
+            root.clone(),
+            BTreeMap::new(),
+            Vec::new(),
+            vec![std::path::PathBuf::from("relative")],
+            false,
+        )
+        .err()
+        .unwrap();
+        assert!(relative.contains("absolute"));
+
+        let missing_path = root.join("missing");
+        let missing = Config::new_with_command_paths(
+            root.clone(),
+            BTreeMap::new(),
+            Vec::new(),
+            vec![missing_path.clone()],
+            false,
+        )
+        .err()
+        .unwrap();
+        assert!(missing.contains(&missing_path.display().to_string()));
 
         fs::remove_dir_all(root).unwrap();
     }
