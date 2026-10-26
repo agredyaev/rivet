@@ -2,6 +2,19 @@
 
 This file records released versions. Historical entries describe those versions; see the README and `docs/` for the current source's interface.
 
+## [1.3.0](https://github.com/agredyaev/rivet/compare/v1.2.0...v1.3.0) (2026-10-26)
+
+
+### Bug Fixes
+
+* update fuzz targets for borrowed tunnel wire ([6984b5e](https://github.com/agredyaev/rivet/commit/6984b5e4b8f009912b36211c4afe9b2ecf21a7a8))
+
+
+### Refactoring
+
+* enforce pointerless data-oriented runtime ([fbc159a](https://github.com/agredyaev/rivet/commit/fbc159a5b8934ad75a12362b7e8ca4ccc5a2378f))
+* enforce pointerless data-oriented runtime ([e1606d9](https://github.com/agredyaev/rivet/commit/e1606d96d50d3463a26e96b70d4418a0e6c3022e))
+
 ## [1.2.0](https://github.com/agredyaev/rivet/compare/v1.1.0...v1.2.0) (2026-10-26)
 
 
