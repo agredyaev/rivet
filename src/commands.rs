@@ -63,11 +63,12 @@ pub fn admitted(
         .map_err(|_| Fault::new("PATH_DENIED", "cwd is unavailable or escapes allowed roots"))?;
     let canonical_cwd = fs::canonicalize(&request.cwd)
         .map_err(|_| Fault::new("PATH_DENIED", "cwd cannot be checked"))?;
-    let mut command = sandbox::command(
+    let mut command = sandbox::command_with_paths(
         &entry.path,
         &request.args,
         &config.root.path,
         &canonical_cwd,
+        &config.command_paths,
         config.network,
     )
     .map_err(|error| {

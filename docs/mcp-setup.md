@@ -70,7 +70,7 @@ rivet session
 
 Here `rivet` means the binary on `PATH` or its absolute path. The installer starts it directly without adding it to `PATH`; for manual downloads, use the extracted package's absolute `bin/rivet` path.
 
-Rivet prints the workspace root, command names, resolved executable paths, child network policy, and selected environment-variable names. The built-in selector offers `uv`, `mkdir`, `rg`, `git`, `cargo`, and `make`; custom commands can be added explicitly. Interactive setup also asks whether child commands need network access and specific parent environment variables.
+Rivet prints the workspace root, explicit child command paths, command names, resolved executable paths, child network policy, and selected environment-variable names. The built-in selector offers `uv`, `mkdir`, `rg`, `git`, `cargo`, and `make`; custom commands can be added explicitly. Interactive setup also asks whether child commands need network access and specific parent environment variables.
 
 Rivet then asks for:
 
@@ -96,6 +96,7 @@ export CONTROL_PLANE_API_KEY="sk-..."
 rivet session \
   --allow-command git=git \
   --allow-command cargo=cargo \
+  --allow-command-path "$HOME/.rustup" \
   --pass-env FRED_API_KEY \
   --network
 ```
@@ -129,9 +130,9 @@ Production uses `https://api.openai.com`. A different `CONTROL_PLANE_BASE_URL` i
 `rivet session`:
 
 1. canonicalizes the current directory as the single workspace root;
-2. collects or accepts the command allowlist;
+2. collects or accepts the command allowlist and canonicalizes explicit `--allow-command-path` grants;
 3. captures explicit `--pass-env` values and the network capability;
-4. validates the workspace, registered executables, and mandatory OS sandbox;
+4. validates the workspace, command paths, registered executables, and mandatory OS sandbox;
 5. constructs the MCP runtime in the same process;
 6. opens the OpenAI tunnel control-plane connection;
 7. polls `/v1/tunnels/{tunnel_id}/poll`;

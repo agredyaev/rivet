@@ -19,6 +19,7 @@ fn help_exposes_only_session_runtime() {
     assert!(session.status.success());
     let session_help = String::from_utf8_lossy(&session.stdout);
     assert!(session_help.contains("--allow-command NAME=EXECUTABLE"));
+    assert!(session_help.contains("--allow-command-path PATH"));
     assert!(session_help.contains("--pass-env NAME"));
     assert!(session_help.contains("--network"));
     assert!(!session_help.contains("--allow-subcommand"));

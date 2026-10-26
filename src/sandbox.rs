@@ -1,8 +1,9 @@
 //! OS-enforced isolation for commands launched by native tunnel sessions.
 //!
 //! Rivet itself keeps the OpenAI tunnel connection outside this sandbox.
-//! Sandboxed children can modify only the current workspace and their private
-//! per-workspace cache. Host toolchains are read-only. Network is opt-in.
+//! Sandboxed children can modify the current workspace, their private
+//! per-workspace cache, and explicit startup-granted command paths. Other host
+//! toolchain paths are read-only. Network is opt-in.
 
 use crate::profile;
 use sha2::{Digest, Sha256};
@@ -220,11 +221,23 @@ fn macos_developer_dir() -> Option<PathBuf> {
     command_line_tools.is_dir().then_some(command_line_tools)
 }
 
+#[cfg(test)]
 pub fn command(
     executable: &Path,
     args: &[String],
     workspace: &Path,
     cwd: &Path,
+    network: bool,
+) -> Result<Command, String> {
+    command_with_paths(executable, args, workspace, cwd, &[], network)
+}
+
+pub fn command_with_paths(
+    executable: &Path,
+    args: &[String],
+    workspace: &Path,
+    cwd: &Path,
+    command_paths: &[PathBuf],
     network: bool,
 ) -> Result<Command, String> {
     let cache_started = Instant::now();
@@ -240,17 +253,17 @@ pub fn command(
 
     #[cfg(target_os = "macos")]
     {
-        macos_command(executable, args, workspace, cwd, network)
+        macos_command(executable, args, workspace, cwd, command_paths, network)
     }
 
     #[cfg(target_os = "linux")]
     {
-        linux_command(executable, args, workspace, cwd, network)
+        linux_command(executable, args, workspace, cwd, command_paths, network)
     }
 
     #[cfg(not(any(target_os = "macos", target_os = "linux")))]
     {
-        let _ = (executable, args, workspace, cwd, network);
+        let _ = (executable, args, workspace, cwd, command_paths, network);
         Err("native sandbox is supported on macOS and Linux/WSL2 only".into())
     }
 }
@@ -301,7 +314,12 @@ fn allow_read_rule(path: &Path) -> String {
 }
 
 #[cfg(target_os = "macos")]
-fn macos_profile(executable: &Path, workspace: &Path, network: bool) -> String {
+fn macos_profile(
+    executable: &Path,
+    workspace: &Path,
+    command_paths: &[PathBuf],
+    network: bool,
+) -> String {
     let workspace = fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
     let mut profile = String::from(
         r#"(version 1)
@@ -366,6 +384,14 @@ fn macos_profile(executable: &Path, workspace: &Path, network: bool) -> String {
         "(allow file-read* file-write* (subpath \"{}\"))\n",
         seatbelt_literal(&workspace)
     ));
+    for path in command_paths {
+        profile.push_str(&allow_read_rule(path));
+        let filter = if path.is_dir() { "subpath" } else { "literal" };
+        profile.push_str(&format!(
+            "(allow file-read* file-write* ({filter} \"{}\"))\n",
+            seatbelt_literal(path)
+        ));
+    }
 
     profile.push_str(&allow_read_rule(executable));
     if let Ok(canonical) = fs::canonicalize(executable)
@@ -414,6 +440,7 @@ fn macos_command(
     args: &[String],
     workspace: &Path,
     cwd: &Path,
+    command_paths: &[PathBuf],
     network: bool,
 ) -> Result<Command, String> {
     const SANDBOX_EXEC: &str = "/usr/bin/sandbox-exec";
@@ -422,7 +449,7 @@ fn macos_command(
     }
 
     let profile_started = Instant::now();
-    let seatbelt = macos_profile(executable, workspace, network);
+    let seatbelt = macos_profile(executable, workspace, command_paths, network);
     let profile_us = profile_started.elapsed().as_micros();
 
     let command_started = Instant::now();
@@ -475,6 +502,7 @@ fn linux_command(
     args: &[String],
     workspace: &Path,
     cwd: &Path,
+    command_paths: &[PathBuf],
     network: bool,
 ) -> Result<Command, String> {
     let bwrap = bubblewrap().ok_or(
@@ -526,6 +554,9 @@ fn linux_command(
     }
     for path in toolchain_paths() {
         command.arg("--ro-bind-try").arg(&path).arg(&path);
+    }
+    for path in command_paths {
+        command.arg("--bind").arg(path).arg(path);
     }
     if is_git(executable) {
         for path in git_metadata_paths(workspace) {
@@ -627,6 +658,7 @@ mod tests {
             &["status".to_owned()],
             &workspace,
             &workspace,
+            &[],
             false,
         )
         .unwrap();
@@ -770,6 +802,64 @@ mod tests {
         apply_environment(&mut write, &workspace);
         assert!(write.output().unwrap().status.success());
         assert!(created.exists());
+
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn macos_profile_allows_only_explicit_command_path() {
+        let (base, workspace, sibling) = test_workspace();
+        let allowed_dir = sibling.join("allowed");
+        let denied_dir = sibling.join("denied");
+        fs::create_dir_all(&allowed_dir).unwrap();
+        fs::create_dir_all(&denied_dir).unwrap();
+
+        let profile = macos_profile(
+            Path::new("/bin/cat"),
+            &workspace,
+            std::slice::from_ref(&allowed_dir),
+            false,
+        );
+        let allowed = seatbelt_literal(&allowed_dir);
+        let denied = seatbelt_literal(&denied_dir);
+        assert!(profile.contains(&format!(
+            "(allow file-read* file-write* (subpath \"{allowed}\"))"
+        )));
+        assert!(!profile.contains(&denied));
+
+        fs::remove_dir_all(base).unwrap();
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn linux_profile_binds_only_explicit_command_path() {
+        let (base, workspace, sibling) = test_workspace();
+        let allowed_dir = sibling.join("allowed");
+        let denied_dir = sibling.join("denied");
+        fs::create_dir_all(&allowed_dir).unwrap();
+        fs::create_dir_all(&denied_dir).unwrap();
+
+        let command = linux_command(
+            Path::new("/bin/cat"),
+            &[],
+            &workspace,
+            &workspace,
+            std::slice::from_ref(&allowed_dir),
+            false,
+        )
+        .unwrap();
+        let args = command
+            .get_args()
+            .map(|arg| arg.to_string_lossy().into_owned())
+            .collect::<Vec<_>>();
+        let allowed = allowed_dir.to_string_lossy().into_owned();
+        let denied = denied_dir.to_string_lossy().into_owned();
+        assert!(
+            args.windows(3)
+                .any(|window| { window == ["--bind", allowed.as_str(), allowed.as_str()] })
+        );
+        assert!(!args.iter().any(|arg| arg == &denied));
 
         fs::remove_dir_all(base).unwrap();
     }

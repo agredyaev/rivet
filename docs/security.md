@@ -13,6 +13,11 @@ Top-level executable
   authority: --allow-command NAME=EXECUTABLE
   enforcement: MCP command-name lookup
 
+Child command host paths
+  authority: --allow-command-path PATH
+  enforcement: native OS sandbox only
+  semantics: read/write for child commands; never an MCP filesystem root or cwd root
+
 argv
   authority: MCP request
   semantics: opaque argv passed directly to the registered executable
@@ -32,12 +37,13 @@ Process limits
   authority: fixed Rivet limits
 ```
 
-The MCP caller cannot add executables, environment variables, filesystem roots, or network access after the session starts.
+The MCP caller cannot add executables, command host paths, environment variables, filesystem roots, or network access after the session starts.
 
 ## Native sandbox
 
 - The current directory is the only workspace root.
 - Rivet filesystem tools use capability-based paths and cannot leave that workspace.
+- Repeatable `--allow-command-path PATH` grants child commands read/write access to exact canonical host paths without adding MCP roots or allowing `cwd` outside the workspace.
 - Every child command is OS-sandboxed before execution. There is no unsandboxed command-execution mode.
 - macOS uses `/usr/bin/sandbox-exec` (Seatbelt).
 - Linux and WSL2 use `bubblewrap`. Ubuntu 24.04 requires the distro `bwrap-userns-restrict` AppArmor profile for unprivileged user namespaces.
