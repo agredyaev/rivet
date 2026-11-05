@@ -2,6 +2,20 @@
 
 This file records released versions. Historical entries describe those versions; see the README and `docs/` for the current source's interface.
 
+## [1.6.0](https://github.com/agredyaev/rivet/compare/v1.5.0...v1.6.0) (2026-11-05)
+
+
+### Bug Fixes
+
+* **ci:** require both release lockfiles ([c4b1151](https://github.com/agredyaev/rivet/commit/c4b11513ecd848ada1891b1c3bfb5e2e256102f4))
+* **ci:** track pinned Linux job ([ddf1faf](https://github.com/agredyaev/rivet/commit/ddf1fafccd1e3edc40277d26dee0b477bbef1ea4))
+* **release:** bind releases to tested main ([5756788](https://github.com/agredyaev/rivet/commit/57567882c57fea4e5d5290090ccb7c6ac61b4543))
+* **release:** enforce fuzz lock version invariants ([d657099](https://github.com/agredyaev/rivet/commit/d657099d87832ad75007357d333856e09598bf39))
+* **release:** harden version-only releases ([83567b0](https://github.com/agredyaev/rivet/commit/83567b003b5b4c3f517b1586f645a89e0ed7cef1))
+* **release:** sync fuzz lockfile ([cc05fff](https://github.com/agredyaev/rivet/commit/cc05fff55f14f3ff43b2afd8485f1c1810fc958f))
+* **release:** target local fuzz package ([3ae06dd](https://github.com/agredyaev/rivet/commit/3ae06ddfbee92006f6d672993619930ee567c7ca))
+* **release:** update fuzz lock version ([de23c08](https://github.com/agredyaev/rivet/commit/de23c08245ed14dd12daaf51489ac2153ee69874))
+
 ## [1.5.0](https://github.com/agredyaev/rivet/compare/v1.4.0...v1.5.0) (2026-11-05)
 
 
