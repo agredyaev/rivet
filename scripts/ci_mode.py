@@ -45,7 +45,8 @@ def normalize_lock(text, version):
 def version_only(before, after):
     """Compare complete file contents, ignoring only explicitly permitted version fields."""
     changed = {path for path in before.keys() | after.keys() if before.get(path) != after.get(path)}
-    if not {'Cargo.toml', 'Cargo.lock', '.release-please-manifest.json'} <= changed <= RELEASE_FILES:
+    if not {'Cargo.toml', 'Cargo.lock', 'fuzz/Cargo.lock',
+            '.release-please-manifest.json'} <= changed <= RELEASE_FILES:
         return False
     if any(path not in before or path not in after for path in changed):
         return False
@@ -56,7 +57,7 @@ def version_only(before, after):
         if normalize_manifest(before['Cargo.toml'], old) != normalize_manifest(after['Cargo.toml'], new):
             return False
         for path in ('Cargo.lock', 'fuzz/Cargo.lock'):
-            if path in changed and normalize_lock(before[path], old) != normalize_lock(after[path], new):
+            if normalize_lock(before[path], old) != normalize_lock(after[path], new):
                 return False
         previous = json.loads(before['.release-please-manifest.json'])
         current = json.loads(after['.release-please-manifest.json'])
