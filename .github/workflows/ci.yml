@@ -60,7 +60,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [macos-latest, ubuntu-24.04]
+        os: [macos-26-intel, ubuntu-24.04]
     runs-on: ${{ matrix.os }}
     timeout-minutes: 20
     permissions:
