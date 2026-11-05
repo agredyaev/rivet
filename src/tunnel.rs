@@ -161,7 +161,7 @@ async fn poll_loop(http: reqwest::Client, endpoint: String, runtime: Rivet) -> R
     let mut failures = 0_u32;
     let poll_url = format!("{endpoint}/poll");
 
-    loop {
+    'poll: loop {
         while in_flight.len() >= MAX_IN_FLIGHT {
             if let Some(result) = in_flight.join_next().await {
                 report_task(result);
@@ -173,7 +173,7 @@ async fn poll_loop(http: reqwest::Client, endpoint: String, runtime: Rivet) -> R
 
         let available = MAX_IN_FLIGHT.saturating_sub(in_flight.len()).clamp(1, 25);
         let profiling = profile::enabled();
-        let poll_started = profiling.then(Instant::now);
+        let poll_started = Instant::now();
         let response = match http
             .get(format!(
                 "{poll_url}?limit={available}&timeout_ms={POLL_TIMEOUT_MS}"
@@ -185,7 +185,14 @@ async fn poll_loop(http: reqwest::Client, endpoint: String, runtime: Rivet) -> R
             Ok(response) => response,
             Err(error) => {
                 failures = failures.saturating_add(1);
-                eprintln!("Tunnel poll transport error: {error}");
+                eprintln!(
+                    "Tunnel poll transport error: elapsed_ms={} timeout={} connect={} failures={} source={:?}",
+                    poll_started.elapsed().as_millis(),
+                    error.is_timeout(),
+                    error.is_connect(),
+                    failures,
+                    std::error::Error::source(&error),
+                );
                 sleep(backoff(failures)).await;
                 continue;
             }
@@ -193,7 +200,7 @@ async fn poll_loop(http: reqwest::Client, endpoint: String, runtime: Rivet) -> R
 
         let received_at = Instant::now();
         let received_wall_ms = profile::wall_ms();
-        let poll_http_us = poll_started.map(|started| started.elapsed().as_micros());
+        let poll_http_us = profiling.then(|| poll_started.elapsed().as_micros());
         let status = response.status();
 
         if status == StatusCode::NO_CONTENT {
@@ -217,11 +224,42 @@ async fn poll_loop(http: reqwest::Client, endpoint: String, runtime: Rivet) -> R
             return Err(format!("tunnel poll returned HTTP {status}"));
         }
 
-        failures = 0;
         let body_started = profiling.then(Instant::now);
-        let body = read_limited(response, MAX_POLL_BODY_BYTES).await?;
+        let mut response = response;
+        let mut body = Vec::with_capacity(
+            response
+                .content_length()
+                .and_then(|length| usize::try_from(length).ok())
+                .unwrap_or(0)
+                .min(MAX_POLL_BODY_BYTES),
+        );
+        loop {
+            match response.chunk().await {
+                Ok(Some(chunk)) => {
+                    if body.len().saturating_add(chunk.len()) > MAX_POLL_BODY_BYTES {
+                        return Err(format!(
+                            "tunnel response exceeds {MAX_POLL_BODY_BYTES} bytes"
+                        ));
+                    }
+                    body.extend_from_slice(&chunk);
+                }
+                Ok(None) => break,
+                Err(error) => {
+                    failures = failures.saturating_add(1);
+                    eprintln!(
+                        "Tunnel poll body transport error: timeout={} failures={} source={:?}",
+                        error.is_timeout(),
+                        failures,
+                        std::error::Error::source(&error),
+                    );
+                    sleep(backoff(failures)).await;
+                    continue 'poll;
+                }
+            }
+        }
         let envelope =
             parse_poll(&body).map_err(|error| format!("invalid tunnel poll JSON: {error}"))?;
+        failures = 0;
         profile::event(|| {
             serde_json::json!({
                 "event": "poll",
@@ -586,27 +624,6 @@ async fn sleep_with_deadline(delay: Duration, deadline: Option<Instant>) -> bool
     }
     sleep(delay).await;
     true
-}
-
-async fn read_limited(mut response: reqwest::Response, cap: usize) -> Result<Vec<u8>, String> {
-    let mut body = Vec::with_capacity(
-        response
-            .content_length()
-            .and_then(|length| usize::try_from(length).ok())
-            .unwrap_or(0)
-            .min(cap),
-    );
-    while let Some(chunk) = response
-        .chunk()
-        .await
-        .map_err(|error| format!("failed to read tunnel body: {error}"))?
-    {
-        if body.len().saturating_add(chunk.len()) > cap {
-            return Err(format!("tunnel response exceeds {cap} bytes"));
-        }
-        body.extend_from_slice(&chunk);
-    }
-    Ok(body)
 }
 
 fn report_task(result: Result<Result<(), String>, tokio::task::JoinError>) {
