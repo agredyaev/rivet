@@ -9,7 +9,7 @@ import subprocess
 VERSION = re.compile(r'^version = "(\d+\.\d+\.\d+)"$', re.MULTILINE)
 RELEASE_FILES = {'Cargo.toml', 'Cargo.lock', 'fuzz/Cargo.lock',
                  '.release-please-manifest.json', 'CHANGELOG.md'}
-FULL_JOBS = {'dependencies', 'fuzz', 'build (macos-latest)',
+FULL_JOBS = {'dependencies', 'fuzz', 'build (macos-26-intel)',
              'build (ubuntu-24.04)', 'cross', 'release-artifacts'}
 
 
