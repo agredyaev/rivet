@@ -2,6 +2,19 @@
 
 This file records released versions. Historical entries describe those versions; see the README and `docs/` for the current source's interface.
 
+## [1.7.0](https://github.com/agredyaev/rivet/compare/v1.6.0...v1.7.0) (2026-11-05)
+
+
+### Bug Fixes
+
+* **ci:** avoid constrained macOS arm64 runners ([2981b8e](https://github.com/agredyaev/rivet/commit/2981b8e800efd11ed8bc7a68920629073cfe83cf))
+* **ci:** remove macOS test races ([1e6999c](https://github.com/agredyaev/rivet/commit/1e6999c679e03f896a77d327090c4ba84b7a84df))
+* **ci:** track Intel macOS job ([45844bd](https://github.com/agredyaev/rivet/commit/45844bd7b999b81d6873e20862256f2edb4384c5))
+* **ci:** use Intel macOS runner ([b2841f9](https://github.com/agredyaev/rivet/commit/b2841f950deeecb7176d55e77cabbde60dbf729a))
+* **sandbox:** tolerate concurrent Cargo cache setup ([b15c1ce](https://github.com/agredyaev/rivet/commit/b15c1ce1649049380a2849b98f301862d3ff2d03))
+* **tunnel:** keep poller alive and expose diagnostics ([ced5450](https://github.com/agredyaev/rivet/commit/ced545089936050a70482848c8ab2589a93933ed))
+* **tunnel:** keep polling through recoverable failures ([150fdb1](https://github.com/agredyaev/rivet/commit/150fdb11dc6af3fa5bc85265b78c590532bc6b7b))
+
 ## [1.6.0](https://github.com/agredyaev/rivet/compare/v1.5.0...v1.6.0) (2026-11-05)
 
 
