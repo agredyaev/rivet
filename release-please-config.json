@@ -26,7 +26,14 @@
   "packages": {
     ".": {
       "release-type": "rust",
-      "versioning": "always-bump-minor"
+      "versioning": "always-bump-minor",
+      "extra-files": [
+        {
+          "type": "toml",
+          "path": "fuzz/Cargo.lock",
+          "jsonpath": "$.package[?(@.name.value=='rivet')].version"
+        }
+      ]
     }
   }
 }
