@@ -1231,10 +1231,28 @@ mod tests {
 
         validate_transport(&http, &endpoint).await.unwrap();
         let poller = tokio::spawn(poll_loop(http, endpoint, runtime));
-        tokio::time::sleep(Duration::from_millis(600)).await;
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            {
+                let state = server.state.lock().unwrap();
+                if state.injected_http_error && state.injected_invalid_json && state.poll_count >= 4
+                {
+                    break;
+                }
+            }
+            assert!(
+                Instant::now() < deadline,
+                "poller did not recover through injected poll failures before deadline"
+            );
+            assert!(
+                !poller.is_finished(),
+                "recoverable poll failures must not terminate the poll loop"
+            );
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
         assert!(
             !poller.is_finished(),
-            "transient HTTP 400 must not terminate the poll loop"
+            "recoverable poll failures must not terminate the poll loop"
         );
         poller.abort();
         let _ = poller.await;
