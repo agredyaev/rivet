@@ -2,6 +2,17 @@
 
 This file records released versions. Historical entries describe those versions; see the README and `docs/` for the current source's interface.
 
+## [1.5.0](https://github.com/agredyaev/rivet/compare/v1.4.0...v1.5.0) (2026-11-05)
+
+
+### Bug Fixes
+
+* **ci:** stabilize Linux checks ([70a25f1](https://github.com/agredyaev/rivet/commit/70a25f16ccf7179f97437a464b80d7c84ffecfb6))
+* **ci:** stabilize Linux checks ([1ba4b9c](https://github.com/agredyaev/rivet/commit/1ba4b9cbaa6a30ee25eec7e63ba783c1d8e7a54c))
+* **ci:** sync fuzz lockfile ([9f693be](https://github.com/agredyaev/rivet/commit/9f693becbe6fb842ac39dec46ca67fba937fe32e))
+* **tunnel:** recover interrupted poll bodies ([1e09609](https://github.com/agredyaev/rivet/commit/1e0960953690787e9751f646f5f71d5a020baa5b))
+* **tunnel:** recover interrupted poll bodies ([ff7a03e](https://github.com/agredyaev/rivet/commit/ff7a03e1d098d00f6fa7bb768da36e6af748f207))
+
 ## [1.4.0](https://github.com/agredyaev/rivet/compare/v1.3.0...v1.4.0) (2026-10-26)
 
 
