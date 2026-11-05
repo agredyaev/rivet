@@ -899,6 +899,7 @@ mod tests {
     struct MockData {
         metadata_headers: Option<BTreeMap<String, String>>,
         first_poll_path: Option<String>,
+        poll_count: usize,
         post_bodies: BTreeMap<String, Vec<Vec<u8>>>,
         shard_tokens: BTreeMap<String, Vec<String>>,
     }
@@ -943,8 +944,9 @@ mod tests {
                     }
 
                     if request.method == "GET" && request.path.starts_with(&poll_path) {
-                        let (first, complete) = {
+                        let (first, complete, poll_count) = {
                             let mut state = state_for_thread.lock().unwrap();
+                            state.poll_count += 1;
                             let first = state.first_poll_path.is_none();
                             if first {
                                 state.first_poll_path = Some(request.path.clone());
@@ -953,11 +955,15 @@ mod tests {
                                 .post_bodies
                                 .get("req_retry")
                                 .is_some_and(|attempts| attempts.len() == 2);
-                            (first, state.post_bodies.len() == 15 && retry_done)
+                            (
+                                first,
+                                state.post_bodies.len() == 15 && retry_done,
+                                state.poll_count,
+                            )
                         };
                         if first {
                             write_response(&mut stream, 200, &[], &poll_body).unwrap();
-                        } else if complete {
+                        } else if complete && poll_count == 2 {
                             write_response(&mut stream, 400, &[], b"{}").unwrap();
                         } else {
                             thread::sleep(Duration::from_millis(5));
@@ -1206,12 +1212,14 @@ mod tests {
         .unwrap();
 
         validate_transport(&http, &endpoint).await.unwrap();
-        let error =
-            tokio::time::timeout(Duration::from_secs(5), poll_loop(http, endpoint, runtime))
-                .await
-                .expect("mock tunnel did not terminate")
-                .unwrap_err();
-        assert!(error.contains("HTTP 400"), "{error}");
+        let poller = tokio::spawn(poll_loop(http, endpoint, runtime));
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert!(
+            !poller.is_finished(),
+            "transient HTTP 400 must not terminate the poll loop"
+        );
+        poller.abort();
+        let _ = poller.await;
         runtime.shutdown().await;
         server.stop();
 
@@ -1240,6 +1248,10 @@ mod tests {
                 .first_poll_path
                 .as_ref()
                 .is_some_and(|path| path.contains("limit=16&timeout_ms=15000"))
+        );
+        assert!(
+            state.poll_count >= 3,
+            "poller must continue after the injected HTTP 400"
         );
 
         let retry = &state.post_bodies["req_retry"];
