@@ -1235,9 +1235,7 @@ mod tests {
         loop {
             {
                 let state = server.state.lock().unwrap();
-                if state.injected_http_error
-                    && state.injected_invalid_json
-                    && state.poll_count >= 4
+                if state.injected_http_error && state.injected_invalid_json && state.poll_count >= 4
                 {
                     break;
                 }
