@@ -159,7 +159,10 @@ async fn validate_transport(http: &reqwest::Client, endpoint: &str) -> Result<()
 async fn poll_loop(http: reqwest::Client, endpoint: String, runtime: Rivet) -> Result<(), String> {
     let mut in_flight = JoinSet::new();
     let mut failures = 0_u32;
+    let mut poll_succeeded = false;
     let poll_url = format!("{endpoint}/poll");
+
+    eprintln!("Tunnel poller started: timeout_ms={POLL_TIMEOUT_MS} max_in_flight={MAX_IN_FLIGHT}");
 
     'poll: loop {
         while in_flight.len() >= MAX_IN_FLIGHT {
@@ -185,15 +188,17 @@ async fn poll_loop(http: reqwest::Client, endpoint: String, runtime: Rivet) -> R
             Ok(response) => response,
             Err(error) => {
                 failures = failures.saturating_add(1);
+                let delay = backoff(failures);
                 eprintln!(
-                    "Tunnel poll transport error: elapsed_ms={} timeout={} connect={} failures={} source={:?}",
+                    "Tunnel poll failed: kind=transport elapsed_ms={} timeout={} connect={} failures={} retry_ms={} source={:?}",
                     poll_started.elapsed().as_millis(),
                     error.is_timeout(),
                     error.is_connect(),
                     failures,
+                    delay.as_millis(),
                     std::error::Error::source(&error),
                 );
-                sleep(backoff(failures)).await;
+                sleep(delay).await;
                 continue;
             }
         };
@@ -204,24 +209,36 @@ async fn poll_loop(http: reqwest::Client, endpoint: String, runtime: Rivet) -> R
         let status = response.status();
 
         if status == StatusCode::NO_CONTENT {
+            if failures > 0 || !poll_succeeded {
+                eprintln!(
+                    "Tunnel poller operational: status={} recovered_failures={}",
+                    status.as_u16(),
+                    failures
+                );
+            }
             failures = 0;
+            poll_succeeded = true;
             continue;
         }
         if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
             return Err(format!(
-                "tunnel poll authorization failed with HTTP {status}"
+                "FATAL tunnel poll authorization failed: HTTP {}",
+                status.as_u16()
             ));
         }
-        if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+        if status != StatusCode::OK {
             failures = failures.saturating_add(1);
             let delay = retry_after(response.headers())
                 .unwrap_or_default()
                 .max(backoff(failures));
+            eprintln!(
+                "Tunnel poll failed: kind=http status={} failures={} retry_ms={}",
+                status.as_u16(),
+                failures,
+                delay.as_millis()
+            );
             sleep(delay).await;
             continue;
-        }
-        if status != StatusCode::OK {
-            return Err(format!("tunnel poll returned HTTP {status}"));
         }
 
         let body_started = profiling.then(Instant::now);
@@ -246,20 +263,46 @@ async fn poll_loop(http: reqwest::Client, endpoint: String, runtime: Rivet) -> R
                 Ok(None) => break,
                 Err(error) => {
                     failures = failures.saturating_add(1);
+                    let delay = backoff(failures);
                     eprintln!(
-                        "Tunnel poll body transport error: timeout={} failures={} source={:?}",
+                        "Tunnel poll failed: kind=body_transport timeout={} failures={} retry_ms={} source={:?}",
                         error.is_timeout(),
                         failures,
+                        delay.as_millis(),
                         std::error::Error::source(&error),
                     );
-                    sleep(backoff(failures)).await;
+                    sleep(delay).await;
                     continue 'poll;
                 }
             }
         }
-        let envelope =
-            parse_poll(&body).map_err(|error| format!("invalid tunnel poll JSON: {error}"))?;
+        let envelope = match parse_poll(&body) {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                failures = failures.saturating_add(1);
+                let delay = backoff(failures);
+                eprintln!(
+                    "Tunnel poll failed: kind=invalid_json status={} body_bytes={} failures={} retry_ms={} error={}",
+                    status.as_u16(),
+                    body.len(),
+                    failures,
+                    delay.as_millis(),
+                    error
+                );
+                sleep(delay).await;
+                continue 'poll;
+            }
+        };
+        if failures > 0 || !poll_succeeded {
+            eprintln!(
+                "Tunnel poller operational: status={} commands={} recovered_failures={}",
+                status.as_u16(),
+                envelope.commands.len(),
+                failures
+            );
+        }
         failures = 0;
+        poll_succeeded = true;
         profile::event(|| {
             serde_json::json!({
                 "event": "poll",
@@ -805,10 +848,12 @@ pub async fn run() -> Result<(), String> {
     let runtime = Rivet::new();
 
     println!("  Connecting to OpenAI Secure MCP Tunnel...");
-    validate_transport(&http, &endpoint).await?;
-    println!(
-        "  ✓ Credentials accepted\n  Direct Rivet tunnel is running. Press Ctrl+C to stop it."
-    );
+    match validate_transport(&http, &endpoint).await {
+        Ok(()) => println!("  ✓ Tunnel metadata reachable"),
+        Err(error) if error.contains("authentication or authorization") => return Err(error),
+        Err(error) => eprintln!("Tunnel metadata unavailable; polling will continue: {error}"),
+    }
+    println!("  Starting direct Rivet tunnel poller. Press Ctrl+C to stop it.");
 
     let result = tokio::select! {
         result = poll_loop(http, endpoint, runtime) => result,
@@ -850,6 +895,9 @@ mod tests {
     struct MockData {
         metadata_headers: Option<BTreeMap<String, String>>,
         first_poll_path: Option<String>,
+        poll_count: usize,
+        injected_http_error: bool,
+        injected_invalid_json: bool,
         post_bodies: BTreeMap<String, Vec<Vec<u8>>>,
         shard_tokens: BTreeMap<String, Vec<String>>,
     }
@@ -894,8 +942,15 @@ mod tests {
                     }
 
                     if request.method == "GET" && request.path.starts_with(&poll_path) {
-                        let (first, complete) = {
+                        enum PollReply {
+                            Body,
+                            HttpError,
+                            InvalidJson,
+                            Empty,
+                        }
+                        let reply = {
                             let mut state = state_for_thread.lock().unwrap();
+                            state.poll_count += 1;
                             let first = state.first_poll_path.is_none();
                             if first {
                                 state.first_poll_path = Some(request.path.clone());
@@ -904,15 +959,33 @@ mod tests {
                                 .post_bodies
                                 .get("req_retry")
                                 .is_some_and(|attempts| attempts.len() == 2);
-                            (first, state.post_bodies.len() == 15 && retry_done)
+                            let complete = state.post_bodies.len() == 15 && retry_done;
+                            if first {
+                                PollReply::Body
+                            } else if complete && !state.injected_http_error {
+                                state.injected_http_error = true;
+                                PollReply::HttpError
+                            } else if complete && !state.injected_invalid_json {
+                                state.injected_invalid_json = true;
+                                PollReply::InvalidJson
+                            } else {
+                                PollReply::Empty
+                            }
                         };
-                        if first {
-                            write_response(&mut stream, 200, &[], &poll_body).unwrap();
-                        } else if complete {
-                            write_response(&mut stream, 400, &[], b"{}").unwrap();
-                        } else {
-                            thread::sleep(Duration::from_millis(5));
-                            write_response(&mut stream, 204, &[], b"").unwrap();
+                        match reply {
+                            PollReply::Body => {
+                                write_response(&mut stream, 200, &[], &poll_body).unwrap()
+                            }
+                            PollReply::HttpError => {
+                                write_response(&mut stream, 400, &[], b"{}").unwrap()
+                            }
+                            PollReply::InvalidJson => {
+                                write_response(&mut stream, 200, &[], b"{").unwrap()
+                            }
+                            PollReply::Empty => {
+                                thread::sleep(Duration::from_millis(5));
+                                write_response(&mut stream, 204, &[], b"").unwrap()
+                            }
                         }
                         continue;
                     }
@@ -1157,12 +1230,14 @@ mod tests {
         .unwrap();
 
         validate_transport(&http, &endpoint).await.unwrap();
-        let error =
-            tokio::time::timeout(Duration::from_secs(5), poll_loop(http, endpoint, runtime))
-                .await
-                .expect("mock tunnel did not terminate")
-                .unwrap_err();
-        assert!(error.contains("HTTP 400"), "{error}");
+        let poller = tokio::spawn(poll_loop(http, endpoint, runtime));
+        tokio::time::sleep(Duration::from_millis(600)).await;
+        assert!(
+            !poller.is_finished(),
+            "transient HTTP 400 must not terminate the poll loop"
+        );
+        poller.abort();
+        let _ = poller.await;
         runtime.shutdown().await;
         server.stop();
 
@@ -1191,6 +1266,15 @@ mod tests {
                 .first_poll_path
                 .as_ref()
                 .is_some_and(|path| path.contains("limit=16&timeout_ms=15000"))
+        );
+        assert!(state.injected_http_error, "test must inject HTTP 400");
+        assert!(
+            state.injected_invalid_json,
+            "test must inject malformed HTTP 200 JSON"
+        );
+        assert!(
+            state.poll_count >= 4,
+            "poller must continue after injected poll failures"
         );
 
         let retry = &state.post_bodies["req_retry"];
