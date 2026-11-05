@@ -112,12 +112,26 @@ fn ensure_cache(workspace: &Path) -> Result<PathBuf, String> {
                     }
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    symlink(&source, &target).map_err(|error| {
-                        format!(
-                            "failed to expose read-only Cargo cache {}: {error}",
-                            source.display()
-                        )
-                    })?;
+                    if let Err(error) = symlink(&source, &target) {
+                        if error.kind() != std::io::ErrorKind::AlreadyExists {
+                            return Err(format!(
+                                "failed to expose read-only Cargo cache {}: {error}",
+                                source.display()
+                            ));
+                        }
+                        let points_to_source = fs::symlink_metadata(&target)
+                            .ok()
+                            .is_some_and(|metadata| metadata.file_type().is_symlink())
+                            && fs::read_link(&target)
+                                .map(|path| path == source)
+                                .unwrap_or(false);
+                        if !points_to_source {
+                            return Err(format!(
+                                "sandbox Cargo cache path {} already exists with an unexpected target",
+                                target.display()
+                            ));
+                        }
+                    }
                 }
                 Err(error) => {
                     return Err(format!(
