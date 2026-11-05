@@ -162,9 +162,7 @@ async fn poll_loop(http: reqwest::Client, endpoint: String, runtime: Rivet) -> R
     let mut poll_succeeded = false;
     let poll_url = format!("{endpoint}/poll");
 
-    eprintln!(
-        "Tunnel poller started: timeout_ms={POLL_TIMEOUT_MS} max_in_flight={MAX_IN_FLIGHT}"
-    );
+    eprintln!("Tunnel poller started: timeout_ms={POLL_TIMEOUT_MS} max_in_flight={MAX_IN_FLIGHT}");
 
     'poll: loop {
         while in_flight.len() >= MAX_IN_FLIGHT {
@@ -853,9 +851,7 @@ pub async fn run() -> Result<(), String> {
     match validate_transport(&http, &endpoint).await {
         Ok(()) => println!("  ✓ Tunnel metadata reachable"),
         Err(error) if error.contains("authentication or authorization") => return Err(error),
-        Err(error) => eprintln!(
-            "Tunnel metadata unavailable; polling will continue: {error}"
-        ),
+        Err(error) => eprintln!("Tunnel metadata unavailable; polling will continue: {error}"),
     }
     println!("  Starting direct Rivet tunnel poller. Press Ctrl+C to stop it.");
 
