@@ -159,7 +159,12 @@ async fn validate_transport(http: &reqwest::Client, endpoint: &str) -> Result<()
 async fn poll_loop(http: reqwest::Client, endpoint: String, runtime: Rivet) -> Result<(), String> {
     let mut in_flight = JoinSet::new();
     let mut failures = 0_u32;
+    let mut poll_succeeded = false;
     let poll_url = format!("{endpoint}/poll");
+
+    eprintln!(
+        "Tunnel poller started: timeout_ms={POLL_TIMEOUT_MS} max_in_flight={MAX_IN_FLIGHT}"
+    );
 
     'poll: loop {
         while in_flight.len() >= MAX_IN_FLIGHT {
@@ -185,15 +190,17 @@ async fn poll_loop(http: reqwest::Client, endpoint: String, runtime: Rivet) -> R
             Ok(response) => response,
             Err(error) => {
                 failures = failures.saturating_add(1);
+                let delay = backoff(failures);
                 eprintln!(
-                    "Tunnel poll transport error: elapsed_ms={} timeout={} connect={} failures={} source={:?}",
+                    "Tunnel poll failed: kind=transport elapsed_ms={} timeout={} connect={} failures={} retry_ms={} source={:?}",
                     poll_started.elapsed().as_millis(),
                     error.is_timeout(),
                     error.is_connect(),
                     failures,
+                    delay.as_millis(),
                     std::error::Error::source(&error),
                 );
-                sleep(backoff(failures)).await;
+                sleep(delay).await;
                 continue;
             }
         };
@@ -204,24 +211,36 @@ async fn poll_loop(http: reqwest::Client, endpoint: String, runtime: Rivet) -> R
         let status = response.status();
 
         if status == StatusCode::NO_CONTENT {
+            if failures > 0 || !poll_succeeded {
+                eprintln!(
+                    "Tunnel poller operational: status={} recovered_failures={}",
+                    status.as_u16(),
+                    failures
+                );
+            }
             failures = 0;
+            poll_succeeded = true;
             continue;
         }
         if matches!(status, StatusCode::UNAUTHORIZED | StatusCode::FORBIDDEN) {
             return Err(format!(
-                "tunnel poll authorization failed with HTTP {status}"
+                "FATAL tunnel poll authorization failed: HTTP {}",
+                status.as_u16()
             ));
         }
-        if status == StatusCode::TOO_MANY_REQUESTS || status.is_server_error() {
+        if status != StatusCode::OK {
             failures = failures.saturating_add(1);
             let delay = retry_after(response.headers())
                 .unwrap_or_default()
                 .max(backoff(failures));
+            eprintln!(
+                "Tunnel poll failed: kind=http status={} failures={} retry_ms={}",
+                status.as_u16(),
+                failures,
+                delay.as_millis()
+            );
             sleep(delay).await;
             continue;
-        }
-        if status != StatusCode::OK {
-            return Err(format!("tunnel poll returned HTTP {status}"));
         }
 
         let body_started = profiling.then(Instant::now);
@@ -246,20 +265,46 @@ async fn poll_loop(http: reqwest::Client, endpoint: String, runtime: Rivet) -> R
                 Ok(None) => break,
                 Err(error) => {
                     failures = failures.saturating_add(1);
+                    let delay = backoff(failures);
                     eprintln!(
-                        "Tunnel poll body transport error: timeout={} failures={} source={:?}",
+                        "Tunnel poll failed: kind=body_transport timeout={} failures={} retry_ms={} source={:?}",
                         error.is_timeout(),
                         failures,
+                        delay.as_millis(),
                         std::error::Error::source(&error),
                     );
-                    sleep(backoff(failures)).await;
+                    sleep(delay).await;
                     continue 'poll;
                 }
             }
         }
-        let envelope =
-            parse_poll(&body).map_err(|error| format!("invalid tunnel poll JSON: {error}"))?;
+        let envelope = match parse_poll(&body) {
+            Ok(envelope) => envelope,
+            Err(error) => {
+                failures = failures.saturating_add(1);
+                let delay = backoff(failures);
+                eprintln!(
+                    "Tunnel poll failed: kind=invalid_json status={} body_bytes={} failures={} retry_ms={} error={}",
+                    status.as_u16(),
+                    body.len(),
+                    failures,
+                    delay.as_millis(),
+                    error
+                );
+                sleep(delay).await;
+                continue 'poll;
+            }
+        };
+        if failures > 0 || !poll_succeeded {
+            eprintln!(
+                "Tunnel poller operational: status={} commands={} recovered_failures={}",
+                status.as_u16(),
+                envelope.commands.len(),
+                failures
+            );
+        }
         failures = 0;
+        poll_succeeded = true;
         profile::event(|| {
             serde_json::json!({
                 "event": "poll",
@@ -805,10 +850,14 @@ pub async fn run() -> Result<(), String> {
     let runtime = Rivet::new();
 
     println!("  Connecting to OpenAI Secure MCP Tunnel...");
-    validate_transport(&http, &endpoint).await?;
-    println!(
-        "  ✓ Credentials accepted\n  Direct Rivet tunnel is running. Press Ctrl+C to stop it."
-    );
+    match validate_transport(&http, &endpoint).await {
+        Ok(()) => println!("  ✓ Tunnel metadata reachable"),
+        Err(error) if error.contains("authentication or authorization") => return Err(error),
+        Err(error) => eprintln!(
+            "Tunnel metadata unavailable; polling will continue: {error}"
+        ),
+    }
+    println!("  Starting direct Rivet tunnel poller. Press Ctrl+C to stop it.");
 
     let result = tokio::select! {
         result = poll_loop(http, endpoint, runtime) => result,
