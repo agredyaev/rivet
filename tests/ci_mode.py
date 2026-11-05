@@ -18,6 +18,7 @@ def files(version):
     return {
         'Cargo.toml': f'[package]\nname = "rivet"\nversion = "{version}"\nedition = "2024"\n\n[dependencies]\nbytes = "=1.0.0"\n',
         'Cargo.lock': f'version = 4\n\n[[package]]\nname = "rivet"\nversion = "{version}"\ndependencies = ["bytes"]\n\n[[package]]\nname = "bytes"\nversion = "1.0.0"\nchecksum = "abc"\n',
+        'fuzz/Cargo.lock': f'version = 4\n\n[[package]]\nname = "rivet"\nversion = "{version}"\ndependencies = ["bytes"]\n\n[[package]]\nname = "bytes"\nversion = "1.0.0"\nchecksum = "abc"\n',
         '.release-please-manifest.json': json.dumps({'.': version}),
         'CHANGELOG.md': f'# {version}\n',
     }
@@ -27,7 +28,6 @@ class ReleaseMode(unittest.TestCase):
     def test_version_metadata_only(self):
         self.assertTrue(mode.version_only(files('0.3.0'), files('0.4.0')))
         before, after = files('0.3.0'), files('0.4.0')
-        before['fuzz/Cargo.lock'], after['fuzz/Cargo.lock'] = before['Cargo.lock'], after['Cargo.lock']
         self.assertTrue(mode.version_only(before, after))
 
     def test_non_release_changes_force_full_checks(self):
@@ -52,7 +52,8 @@ class ReleaseMode(unittest.TestCase):
         before = files('0.3.0')
         for version in ('0.3.0', '0.2.0', 'garbage'):
             self.assertFalse(mode.version_only(before, files(version)))
-        for path in ('Cargo.toml', 'Cargo.lock', '.release-please-manifest.json'):
+        for path in ('Cargo.toml', 'Cargo.lock', 'fuzz/Cargo.lock',
+                     '.release-please-manifest.json'):
             after = files('0.4.0')
             after[path] = before[path]
             self.assertFalse(mode.version_only(before, after))
@@ -84,7 +85,9 @@ class ReleaseMode(unittest.TestCase):
                 git('config', 'user.email', 'ci@example.invalid')
                 def commit(version):
                     for name, value in files(version).items():
-                        Path(name).write_text(value)
+                        path = Path(name)
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_text(value)
                     git('add', '.')
                     git('commit', '-qm', version)
                 commit('0.3.0')
