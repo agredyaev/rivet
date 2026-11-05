@@ -900,6 +900,8 @@ mod tests {
         metadata_headers: Option<BTreeMap<String, String>>,
         first_poll_path: Option<String>,
         poll_count: usize,
+        injected_http_error: bool,
+        injected_invalid_json: bool,
         post_bodies: BTreeMap<String, Vec<Vec<u8>>>,
         shard_tokens: BTreeMap<String, Vec<String>>,
     }
@@ -944,7 +946,13 @@ mod tests {
                     }
 
                     if request.method == "GET" && request.path.starts_with(&poll_path) {
-                        let (first, complete, poll_count) = {
+                        enum PollReply {
+                            Body,
+                            HttpError,
+                            InvalidJson,
+                            Empty,
+                        }
+                        let reply = {
                             let mut state = state_for_thread.lock().unwrap();
                             state.poll_count += 1;
                             let first = state.first_poll_path.is_none();
@@ -955,19 +963,33 @@ mod tests {
                                 .post_bodies
                                 .get("req_retry")
                                 .is_some_and(|attempts| attempts.len() == 2);
-                            (
-                                first,
-                                state.post_bodies.len() == 15 && retry_done,
-                                state.poll_count,
-                            )
+                            let complete = state.post_bodies.len() == 15 && retry_done;
+                            if first {
+                                PollReply::Body
+                            } else if complete && !state.injected_http_error {
+                                state.injected_http_error = true;
+                                PollReply::HttpError
+                            } else if complete && !state.injected_invalid_json {
+                                state.injected_invalid_json = true;
+                                PollReply::InvalidJson
+                            } else {
+                                PollReply::Empty
+                            }
                         };
-                        if first {
-                            write_response(&mut stream, 200, &[], &poll_body).unwrap();
-                        } else if complete && poll_count == 2 {
-                            write_response(&mut stream, 400, &[], b"{}").unwrap();
-                        } else {
-                            thread::sleep(Duration::from_millis(5));
-                            write_response(&mut stream, 204, &[], b"").unwrap();
+                        match reply {
+                            PollReply::Body => {
+                                write_response(&mut stream, 200, &[], &poll_body).unwrap()
+                            }
+                            PollReply::HttpError => {
+                                write_response(&mut stream, 400, &[], b"{}").unwrap()
+                            }
+                            PollReply::InvalidJson => {
+                                write_response(&mut stream, 200, &[], b"{").unwrap()
+                            }
+                            PollReply::Empty => {
+                                thread::sleep(Duration::from_millis(5));
+                                write_response(&mut stream, 204, &[], b"").unwrap()
+                            }
                         }
                         continue;
                     }
@@ -1249,9 +1271,14 @@ mod tests {
                 .as_ref()
                 .is_some_and(|path| path.contains("limit=16&timeout_ms=15000"))
         );
+        assert!(state.injected_http_error, "test must inject HTTP 400");
         assert!(
-            state.poll_count >= 3,
-            "poller must continue after the injected HTTP 400"
+            state.injected_invalid_json,
+            "test must inject malformed HTTP 200 JSON"
+        );
+        assert!(
+            state.poll_count >= 4,
+            "poller must continue after injected poll failures"
         );
 
         let retry = &state.post_bodies["req_retry"];
