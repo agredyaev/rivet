@@ -214,7 +214,7 @@ fn read_frame_header(
     Ok((header, frame_bytes, record_count, text_bytes))
 }
 
-fn encode_snapshot(snapshot: &str) -> Result<(u64, Vec<u8>), ContextError> {
+pub(crate) fn encode_snapshot(snapshot: &str) -> Result<(u64, Vec<u8>), ContextError> {
     let body = snapshot.strip_suffix('\n').unwrap_or(snapshot);
     let mut lines = body.split('\n');
     let first = lines
@@ -312,7 +312,7 @@ fn encode_snapshot(snapshot: &str) -> Result<(u64, Vec<u8>), ContextError> {
     Ok((expected, frame))
 }
 
-fn validate_and_format(
+pub(crate) fn validate_and_format(
     frame: &[u8],
     generation: u64,
     record_count: usize,

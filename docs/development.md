@@ -43,7 +43,7 @@ will not appear in those lists.
 
 ## Fuzzing
 
-Full CI fuzzes the critical untrusted-input and bounded-state boundaries with seven production-backed targets:
+Full CI fuzzes the critical untrusted-input and bounded-state boundaries with eight production-backed targets:
 
 - `tunnel_wire`: malformed tunnel poll/command JSON, timeout parsing, JSON-RPC IDs, and tunnel IDs. A committed seed corpus and dictionary drive deep parser paths.
 - `tunnel_wire_structured`: valid generated tunnel commands with semantic invariants for correlation fields, command types, timeouts, future fields, JSON-RPC IDs, and tunnel IDs.
@@ -52,6 +52,7 @@ Full CI fuzzes the critical untrusted-input and bounded-state boundaries with se
 - `command_policy`: exact subcommand admission, NUL rejection, and timeout bounds.
 - `path_policy`: workspace-relative path admission, parent traversal rejection, sibling-prefix rejection, and relative-path rejection.
 - `output_buffer`: bounded process-output capture, reset, offset reads, truncation, and invalid-offset handling.
+- `context_format`: project-context snapshot parsing/encoding plus arbitrary bounded frame-body validation for kinds, offsets, UTF-8, separators, and empty records.
 
 Run a target locally with nightly, for example:
 
