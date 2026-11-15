@@ -980,7 +980,6 @@ mod tests {
     #[test]
     fn pruned_generation_is_distinct_from_missing_retained_segment() {
         let workspace = temp_workspace("expired");
-        let mutation = Mutex::new(());
         let dir = context_dir(&workspace).unwrap();
         fs::create_dir_all(&dir).unwrap();
 
@@ -1002,7 +1001,6 @@ mod tests {
         fs::remove_file(dir.join("context.000001.bin")).unwrap();
         let missing = read(&workspace, Some(2)).unwrap_err();
         assert_eq!(missing.code, "STORAGE_ERROR");
-        drop(mutation);
         let _ = fs::remove_dir_all(workspace);
     }
 
