@@ -193,7 +193,7 @@ impl Rivet {
 // Build the route table once instead of reconstructing it for each request.
 static ROUTER: LazyLock<ToolRouter<Rivet>> = LazyLock::new(Rivet::tool_router);
 
-const SERVER_INSTRUCTIONS: &str = "Batch independent operations. Submit commands asynchronously and continue independent work instead of polling repeatedly. Use list_processes for process state and read_process_output only when captured output is required. Do not build readiness queues, completion cursors, or custom polling protocols on top of Rivet. Before the first workspace file operation or registered command execution in a task, call project_context with generation omitted. After the work, call project_checkpoint only if at least one context record must be added, removed, or changed. Do not checkpoint if the context snapshot is unchanged.";
+const SERVER_INSTRUCTIONS: &str = "When multiple operations do not depend on each other's output, submit them in one batch. After submitting commands, continue any work that does not require their output instead of repeatedly polling. Use list_processes to read process state and read_process_output to read captured output. Do not build readiness queues, completion cursors, or custom polling protocols on top of Rivet. Before the first workspace file operation or registered command execution in a task, call project_context with generation omitted. Before finishing the task, call project_checkpoint only if at least one context record must be added, removed, or changed. Do not checkpoint if the context snapshot is unchanged.";
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -267,7 +267,7 @@ impl Rivet {
         result(process::submit(config::session(), request).await)
     }
 
-    #[tool(description = "Submit up to 20 independent registered commands in one MCP request.")]
+    #[tool(description = "Submit 1 to 20 registered commands in one MCP request. Results preserve input order.")]
     async fn run_commands(
         &self,
         Parameters(request): Parameters<RunCommandsRequest>,
@@ -481,7 +481,7 @@ impl Rivet {
     }
 
     #[tool(
-        description = "Create the next immutable context generation from the complete updated snapshot. Snapshot format: first line GEN<TAB>expected_generation; each following line is kind<TAB>text, where kind is G=goal, R=responsibility, C=constraint, D=decision, F=finding, or T=todo. Save a record only if it is: a goal that constrains future work; a responsibility boundary future changes must preserve; an architectural constraint future changes must preserve; an accepted decision; a verified finding not directly recoverable from source files, Git, or rg; or a TODO requiring work in a later task or chat. Do not save hypotheses, command or test output, current build/test status, facts copied from source files, facts directly recoverable from Git or rg, or generated output. The snapshot is a complete replacement, not a delta. Preserve records that are still true; remove records that are no longer true; change records whose stored fact changed. If expected_generation is 0, checkpoint only if at least one qualifying record exists. Otherwise call this tool only when at least one record was added, removed, or changed. On CONTEXT_CHANGED, call project_context again, apply the intended additions, removals, and changes to that latest snapshot, and retry."
+        description = "Create the next immutable context generation from the complete updated snapshot. Snapshot format: first line GEN<TAB>expected_generation; each following line is kind<TAB>text. Kinds: G=an outcome or requirement a later task must still satisfy; R=a component, ownership, or interface boundary later changes must not cross unless the boundary is changed; C=an architecture or implementation rule later changes must satisfy; D=a project decision already selected and still in force; F=a fact confirmed by a test, tool, or inspection that is not present in source files and is not directly retrievable from Git or rg; T=an unfinished action intentionally deferred to a later task or chat. Do not save hypotheses, raw command or test output, current build/test status, or facts present in source files or directly retrievable from Git or rg. The snapshot is a complete replacement, not a delta. Preserve records whose statements are still true and in force; remove records whose statements are no longer true or in force; replace records whose stored statement changed. If expected_generation is 0, checkpoint only if at least one record matches a kind definition above. Otherwise call this tool only when at least one record was added, removed, or changed. On CONTEXT_CHANGED, call project_context again, apply the intended additions, removals, and changes to that latest snapshot, and retry."
     )]
     async fn project_checkpoint(
         &self,
