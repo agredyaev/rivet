@@ -13,7 +13,7 @@ use std::{
 };
 
 pub const PROCESS_RETENTION_SLOTS: usize = 32;
-pub const MAX_RUNNING_PROCESSES: usize = 8;
+pub const MAX_RUNNING_PROCESSES: usize = 20;
 pub const MAX_PROCESS_OUTPUT_BYTES: usize = 2 * 1024 * 1024;
 pub const MAX_TEXT_BYTES: usize = 4 * 1024 * 1024;
 pub const MAX_DIRECTORY_ENTRIES: usize = 1000;

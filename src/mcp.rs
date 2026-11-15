@@ -1,7 +1,9 @@
 //! MCP tool request routing for the native tunnel runtime.
 use crate::{
     commands::CommandRequest,
-    config::{self, DEFAULT_TIMEOUT_MS, MAX_PROCESS_OUTPUT_BYTES, MAX_TEXT_BYTES},
+    config::{
+        self, DEFAULT_TIMEOUT_MS, MAX_PROCESS_OUTPUT_BYTES, MAX_RUNNING_PROCESSES, MAX_TEXT_BYTES,
+    },
     context, filesystem, process, profile,
 };
 use rivet::mcp_wire::decode_client_message;
@@ -265,15 +267,15 @@ impl Rivet {
         result(process::submit(config::session(), request).await)
     }
 
-    #[tool(description = "Submit up to 8 independent registered commands in one MCP request.")]
+    #[tool(description = "Submit up to 20 independent registered commands in one MCP request.")]
     async fn run_commands(
         &self,
         Parameters(request): Parameters<RunCommandsRequest>,
     ) -> CallToolResult {
-        if request.commands.is_empty() || request.commands.len() > 8 {
+        if request.commands.is_empty() || request.commands.len() > MAX_RUNNING_PROCESSES {
             return result(Err(Fault::new(
                 "INVALID_REQUEST",
-                "commands must contain between 1 and 8 entries",
+                "commands must contain between 1 and 20 entries",
             )));
         }
 
