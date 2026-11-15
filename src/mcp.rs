@@ -267,7 +267,9 @@ impl Rivet {
         result(process::submit(config::session(), request).await)
     }
 
-    #[tool(description = "Submit 1 to 20 registered commands in one MCP request. Results preserve input order.")]
+    #[tool(
+        description = "Submit 1 to 20 registered commands in one MCP request. Results preserve input order."
+    )]
     async fn run_commands(
         &self,
         Parameters(request): Parameters<RunCommandsRequest>,
