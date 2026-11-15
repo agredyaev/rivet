@@ -58,7 +58,7 @@ Rivet advertises one MCP channel:
 {"version":2,"channels":[{"name":"main","stateless":true,"proc_affinity":true}]}
 ```
 
-The channel accepts self-contained stateless MCP requests. Multiple ChatGPT conversations can use the same Rivet daemon concurrently; Rivet does not keep per-chat state. Those conversations share the daemon's command permissions, workspace files, and managed-process table.
+The channel transport is stateless: each MCP request contains the parameters needed to execute that request, and the channel does not keep per-request continuation state. Rivet does not keep per-chat state. If `project_checkpoint` is used, Rivet does keep project-scoped context on disk. Multiple ChatGPT conversations using the same project share command permissions, workspace files, the managed-process table, and the persisted project context; the context is not namespaced by chat.
 
 ## Start a session
 
@@ -175,6 +175,7 @@ The direct transport:
 - sends the runtime key only in the Bearer authorization header;
 - treats `request_id`, `channel`, and `shard_token` as opaque correlation data;
 - keeps MCP file-tool access fixed to the current-directory workspace;
+- stores project context only in the Rivet-owned project-context path: `<git-common-dir>/rivet/context/` for Git workspaces or `<workspace>/.rivet/context/` otherwise;
 - grants linked-worktree Git metadata access to commands launched as `git` and their descendants;
 - runs native-session child commands under Seatbelt on macOS or bubblewrap on Linux/WSL2;
 - denies child network access by default; `--network` enables child networking without weakening the filesystem sandbox;

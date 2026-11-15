@@ -9,9 +9,9 @@ Rivet does not listen on a network port.
 
 `project_context` reads a persisted project-context generation. `project_checkpoint` writes the next immutable generation from a complete snapshot. The MCP server instructions require `project_context` before the first workspace file operation or registered command in a task. Rivet returns context only from `project_context`; it does not prepend context to other requests.
 
-## Quick start
+## Install and start
 
-Run the installer from the workspace Rivet should access:
+Run the installer from the workspace Rivet will expose:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/agredyaev/rivet/main/scripts/install.sh | bash

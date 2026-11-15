@@ -113,7 +113,7 @@ If a committed index entry references malformed data, `project_context` returns 
 
 The context core contains segment-pruning logic, but this version has no MCP tool, CLI command, or runtime policy that invokes it. Normal MCP use therefore does not delete old context segments automatically.
 
-If a retained generation points to a segment that has been removed, `project_context` returns `GENERATION_EXPIRED<TAB>message`. If a segment that should be present is missing or malformed, it returns `STORAGE_ERROR<TAB>message`.
+If pruning removed the segment for a requested generation, `project_context` returns `GENERATION_EXPIRED<TAB>message`. If a committed index entry references a missing or malformed segment that pruning did not remove, it returns `STORAGE_ERROR<TAB>message`.
 
 ## Concurrency
 
