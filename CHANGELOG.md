@@ -2,6 +2,14 @@
 
 This file records released versions. Historical entries describe those versions; see the README and `docs/` for the current source's interface.
 
+## [1.10.0](https://github.com/agredyaev/rivet/compare/v1.9.0...v1.10.0) (2026-11-16)
+
+
+### Bug Fixes
+
+* **context:** validate git project root ([1a8f324](https://github.com/agredyaev/rivet/commit/1a8f324dc950af83ef91523502b3ef2745e0621d))
+* **context:** validate git project root ([348f062](https://github.com/agredyaev/rivet/commit/348f0622b13dc475d0a59c9e8e34729c01edb66e))
+
 ## [1.9.0](https://github.com/agredyaev/rivet/compare/v1.8.0...v1.9.0) (2026-11-16)
 
 
