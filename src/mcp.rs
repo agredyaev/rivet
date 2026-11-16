@@ -591,6 +591,122 @@ mod direct_tests {
     }
 
     #[tokio::test]
+    async fn direct_project_context_round_trip_and_errors() {
+        let runtime = Rivet::new();
+
+        let read = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": 20,
+            "method": "tools/call",
+            "params": {
+                "name": "project_context",
+                "arguments": {}
+            }
+        }))
+        .unwrap();
+        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&read).await.unwrap() else {
+            panic!("project_context must return a terminal response");
+        };
+        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(value["result"]["content"][0]["text"], "GEN\t0\n");
+
+        let empty_checkpoint = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": 21,
+            "method": "tools/call",
+            "params": {
+                "name": "project_checkpoint",
+                "arguments": {"snapshot": "GEN\t0\n"}
+            }
+        }))
+        .unwrap();
+        let Dispatch::Response(raw) = runtime
+            .dispatch_jsonrpc(&empty_checkpoint)
+            .await
+            .unwrap()
+        else {
+            panic!("project_checkpoint must return a terminal response");
+        };
+        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(value["result"]["isError"], true);
+        assert!(
+            value["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("INVALID_CONTEXT\t")
+        );
+
+        let checkpoint = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": 22,
+            "method": "tools/call",
+            "params": {
+                "name": "project_checkpoint",
+                "arguments": {"snapshot": "GEN\t0\nG\tPreserve the context contract.\n"}
+            }
+        }))
+        .unwrap();
+        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&checkpoint).await.unwrap() else {
+            panic!("project_checkpoint must return a terminal response");
+        };
+        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(value["result"]["isError"], false);
+        assert_eq!(value["result"]["content"][0]["text"], "GEN\t1\n");
+
+        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&read).await.unwrap() else {
+            panic!("project_context must return a terminal response");
+        };
+        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(
+            value["result"]["content"][0]["text"],
+            "GEN\t1\nG\tPreserve the context contract.\n"
+        );
+
+        let stale = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": 23,
+            "method": "tools/call",
+            "params": {
+                "name": "project_checkpoint",
+                "arguments": {"snapshot": "GEN\t0\nG\tstale\n"}
+            }
+        }))
+        .unwrap();
+        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&stale).await.unwrap() else {
+            panic!("stale project_checkpoint must return a terminal response");
+        };
+        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(value["result"]["isError"], true);
+        assert!(
+            value["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("CONTEXT_CHANGED\t")
+        );
+
+        let historical = serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": 24,
+            "method": "tools/call",
+            "params": {
+                "name": "project_context",
+                "arguments": {"generation": 1}
+            }
+        }))
+        .unwrap();
+        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&historical).await.unwrap() else {
+            panic!("historical project_context must return a terminal response");
+        };
+        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(
+            value["result"]["content"][0]["text"],
+            "GEN\t1\nG\tPreserve the context contract.\n"
+        );
+
+        runtime.shutdown().await;
+    }
+
+    #[tokio::test]
     async fn direct_read_files_preserves_results_and_total_bound() {
         let runtime = Rivet::new();
         let a = unique_file("a");
