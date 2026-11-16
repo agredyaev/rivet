@@ -78,6 +78,28 @@ fn context_result(value: Result<String, context::ContextError>) -> CallToolResul
 
 static FILE_MUTATION: Mutex<()> = Mutex::new(());
 
+fn project_root(project: &str) -> Result<std::path::PathBuf, context::ContextError> {
+    let path = std::path::Path::new(project);
+    let (root, relative) = config::root_for(config::session(), path).ok_or_else(|| {
+        context::ContextError {
+            code: "INVALID_CONTEXT",
+            message: "project must be an absolute path inside the workspace".into(),
+        }
+    })?;
+    let relative = if relative.as_os_str().is_empty() {
+        std::path::Path::new(".")
+    } else {
+        relative
+    };
+    root.dir
+        .open_dir(relative)
+        .map_err(|_| context::ContextError {
+            code: "INVALID_CONTEXT",
+            message: "project directory is unavailable or escapes the workspace".into(),
+        })?;
+    Ok(root.path.join(relative))
+}
+
 #[derive(Clone, Copy, Default)]
 pub(crate) struct Rivet;
 
@@ -193,7 +215,7 @@ impl Rivet {
 // Build the route table once instead of reconstructing it for each request.
 static ROUTER: LazyLock<ToolRouter<Rivet>> = LazyLock::new(Rivet::tool_router);
 
-const SERVER_INSTRUCTIONS: &str = "When multiple operations do not depend on each other's output, submit them in one batch. After submitting commands, continue any work that does not require their output instead of repeatedly polling. Use list_processes to read process state and read_process_output to read captured output. Do not build readiness queues, completion cursors, or custom polling protocols on top of Rivet. Before the first workspace file operation or registered command execution in a task, call project_context with generation omitted. Before finishing the task, call project_checkpoint only if at least one context record must be added, removed, or changed. Do not checkpoint if the context snapshot is unchanged.";
+const SERVER_INSTRUCTIONS: &str = "When multiple operations do not depend on each other's output, submit them in one batch. After submitting commands, continue any work that does not require their output instead of repeatedly polling. Use list_processes to read process state and read_process_output to read captured output. Do not build readiness queues, completion cursors, or custom polling protocols on top of Rivet. Before the first workspace file operation or registered command execution for a project in a task, call project_context with that project's absolute root path and generation omitted. Keep context separate for separate projects under the workspace. Before finishing the task, call project_checkpoint for each project only if at least one context record for that project must be added, removed, or changed. Do not checkpoint if the context snapshot is unchanged.";
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -231,12 +253,14 @@ struct ProcessStopRequest {
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ProjectContextRequest {
+    project: String,
     generation: Option<u64>,
 }
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
 struct ProjectCheckpointRequest {
+    project: String,
     snapshot: String,
 }
 
@@ -462,7 +486,7 @@ impl Rivet {
     }
 
     #[tool(
-        description = "Read project context. Before the first workspace file operation or registered command execution in a task, call this tool with generation omitted. Set generation only to read a specific retained historical generation. The result is a complete snapshot: first line GEN<TAB>generation; each following line is kind<TAB>text, where kind is G, R, C, D, F, or T."
+        description = "Read project context for one explicit project directory inside the workspace. Pass project as an absolute path to that project's root. Before the first workspace file operation or registered command execution for that project in a task, call this tool with generation omitted. Set generation only to read a specific retained historical generation. The result is a complete snapshot: first line GEN<TAB>generation; each following line is kind<TAB>text, where kind is G, R, C, D, F, or T."
     )]
     async fn project_context(
         &self,
@@ -470,7 +494,8 @@ impl Rivet {
     ) -> CallToolResult {
         context_result(
             tokio::task::spawn_blocking(move || {
-                context::read(&config::session().root.path, request.generation)
+                let project = project_root(&request.project)?;
+                context::read(&project, request.generation)
             })
             .await
             .unwrap_or_else(|_| {
@@ -483,7 +508,7 @@ impl Rivet {
     }
 
     #[tool(
-        description = "Create the next immutable context generation from the complete updated snapshot. Snapshot format: first line GEN<TAB>expected_generation; each following line is kind<TAB>text. Kinds: G=an outcome or requirement a later task must still satisfy; R=a component, ownership, or interface boundary later changes must not cross unless the boundary is changed; C=an architecture or implementation rule later changes must satisfy; D=a project decision already selected and still in force; F=a fact confirmed by a test, tool, or inspection that is not present in source files and is not directly retrievable from Git or rg; T=an unfinished action intentionally deferred to a later task or chat. Do not save hypotheses, raw command or test output, current build/test status, or facts present in source files or directly retrievable from Git or rg. The snapshot is a complete replacement, not a delta. Preserve records whose statements are still true and in force; remove records whose statements are no longer true or in force; replace records whose stored statement changed. If expected_generation is 0, checkpoint only if at least one record matches a kind definition above. Otherwise call this tool only when at least one record was added, removed, or changed. On CONTEXT_CHANGED, call project_context again, apply the intended additions, removals, and changes to that latest snapshot, and retry."
+        description = "Create the next immutable context generation for one explicit project directory inside the workspace. Pass project as an absolute path to that project's root. Snapshot format: first line GEN<TAB>expected_generation; each following line is kind<TAB>text. Kinds: G=an outcome or requirement a later task must still satisfy; R=a component, ownership, or interface boundary later changes must not cross unless the boundary is changed; C=an architecture or implementation rule later changes must satisfy; D=a project decision already selected and still in force; F=a fact confirmed by a test, tool, or inspection that is not present in source files and is not directly retrievable from Git or rg; T=an unfinished action intentionally deferred to a later task or chat. Do not save hypotheses, raw command or test output, current build/test status, or facts present in source files or directly retrievable from Git or rg. The snapshot is a complete replacement, not a delta. Preserve records whose statements are still true and in force; remove records whose statements are no longer true or in force; replace records whose stored statement changed. If expected_generation is 0, checkpoint only if at least one record matches a kind definition above. Otherwise call this tool only when at least one record was added, removed, or changed. On CONTEXT_CHANGED, call project_context again for the same project, apply the intended additions, removals, and changes to that latest snapshot, and retry."
     )]
     async fn project_checkpoint(
         &self,
@@ -491,12 +516,9 @@ impl Rivet {
     ) -> CallToolResult {
         context_result(
             tokio::task::spawn_blocking(move || {
-                context::checkpoint(
-                    &config::session().root.path,
-                    &request.snapshot,
-                    &FILE_MUTATION,
-                )
-                .map(|generation| format!("GEN\t{generation}\n"))
+                let project = project_root(&request.project)?;
+                context::checkpoint(&project, &request.snapshot, &FILE_MUTATION)
+                    .map(|generation| format!("GEN\t{generation}\n"))
             })
             .await
             .unwrap_or_else(|_| {
@@ -591,41 +613,78 @@ mod direct_tests {
     }
 
     #[tokio::test]
-    async fn direct_project_context_round_trip_and_errors() {
+    async fn direct_project_context_is_scoped_per_project() {
         let runtime = Rivet::new();
+        let project_a = direct_root().join("project-a");
+        let project_b = direct_root().join("project-b");
+        fs::create_dir_all(&project_a).unwrap();
+        fs::create_dir_all(&project_b).unwrap();
 
-        let read = serde_json::to_vec(&json!({
-            "jsonrpc": "2.0",
-            "id": 20,
-            "method": "tools/call",
-            "params": {
-                "name": "project_context",
-                "arguments": {}
-            }
-        }))
-        .unwrap();
-        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&read).await.unwrap() else {
+        let read = |id: u64, project: &std::path::Path| {
+            serde_json::to_vec(&json!({
+                "jsonrpc": "2.0",
+                "id": id,
+                "method": "tools/call",
+                "params": {
+                    "name": "project_context",
+                    "arguments": {"project": project}
+                }
+            }))
+            .unwrap()
+        };
+
+        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&read(20, &project_a)).await.unwrap()
+        else {
             panic!("project_context must return a terminal response");
         };
         let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         assert_eq!(value["result"]["content"][0]["text"], "GEN\t0\n");
 
-        let empty_checkpoint = serde_json::to_vec(&json!({
+        let checkpoint_a = serde_json::to_vec(&json!({
             "jsonrpc": "2.0",
             "id": 21,
             "method": "tools/call",
             "params": {
                 "name": "project_checkpoint",
-                "arguments": {"snapshot": "GEN\t0\n"}
+                "arguments": {
+                    "project": project_a,
+                    "snapshot": "GEN\t0\nG\tKeep project A context separate.\n"
+                }
             }
         }))
         .unwrap();
-        let Dispatch::Response(raw) = runtime
-            .dispatch_jsonrpc(&empty_checkpoint)
-            .await
-            .unwrap()
-        else {
+        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&checkpoint_a).await.unwrap() else {
             panic!("project_checkpoint must return a terminal response");
+        };
+        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(value["result"]["isError"], false);
+        assert_eq!(value["result"]["content"][0]["text"], "GEN\t1\n");
+
+        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&read(22, &project_b)).await.unwrap()
+        else {
+            panic!("project_context must return a terminal response");
+        };
+        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(value["result"]["content"][0]["text"], "GEN\t0\n");
+
+        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&read(23, &project_a)).await.unwrap()
+        else {
+            panic!("project_context must return a terminal response");
+        };
+        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(
+            value["result"]["content"][0]["text"],
+            "GEN\t1\nG\tKeep project A context separate.\n"
+        );
+
+        let outside = std::env::temp_dir().join(format!(
+            "rivet-outside-context-{}",
+            std::process::id()
+        ));
+        fs::create_dir_all(&outside).unwrap();
+        let denied = read(24, &outside);
+        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&denied).await.unwrap() else {
+            panic!("project_context denial must return a terminal response");
         };
         let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         assert_eq!(value["result"]["isError"], true);
@@ -636,74 +695,8 @@ mod direct_tests {
                 .starts_with("INVALID_CONTEXT\t")
         );
 
-        let checkpoint = serde_json::to_vec(&json!({
-            "jsonrpc": "2.0",
-            "id": 22,
-            "method": "tools/call",
-            "params": {
-                "name": "project_checkpoint",
-                "arguments": {"snapshot": "GEN\t0\nG\tPreserve the context contract.\n"}
-            }
-        }))
-        .unwrap();
-        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&checkpoint).await.unwrap() else {
-            panic!("project_checkpoint must return a terminal response");
-        };
-        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
-        assert_eq!(value["result"]["isError"], false);
-        assert_eq!(value["result"]["content"][0]["text"], "GEN\t1\n");
-
-        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&read).await.unwrap() else {
-            panic!("project_context must return a terminal response");
-        };
-        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
-        assert_eq!(
-            value["result"]["content"][0]["text"],
-            "GEN\t1\nG\tPreserve the context contract.\n"
-        );
-
-        let stale = serde_json::to_vec(&json!({
-            "jsonrpc": "2.0",
-            "id": 23,
-            "method": "tools/call",
-            "params": {
-                "name": "project_checkpoint",
-                "arguments": {"snapshot": "GEN\t0\nG\tstale\n"}
-            }
-        }))
-        .unwrap();
-        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&stale).await.unwrap() else {
-            panic!("stale project_checkpoint must return a terminal response");
-        };
-        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
-        assert_eq!(value["result"]["isError"], true);
-        assert!(
-            value["result"]["content"][0]["text"]
-                .as_str()
-                .unwrap()
-                .starts_with("CONTEXT_CHANGED\t")
-        );
-
-        let historical = serde_json::to_vec(&json!({
-            "jsonrpc": "2.0",
-            "id": 24,
-            "method": "tools/call",
-            "params": {
-                "name": "project_context",
-                "arguments": {"generation": 1}
-            }
-        }))
-        .unwrap();
-        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&historical).await.unwrap() else {
-            panic!("historical project_context must return a terminal response");
-        };
-        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
-        assert_eq!(
-            value["result"]["content"][0]["text"],
-            "GEN\t1\nG\tPreserve the context contract.\n"
-        );
-
         runtime.shutdown().await;
+        let _ = fs::remove_dir_all(outside);
     }
 
     #[tokio::test]
