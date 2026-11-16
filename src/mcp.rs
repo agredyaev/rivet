@@ -642,7 +642,7 @@ mod direct_tests {
         let project_a = direct_root().join("project-a");
         let project_b = direct_root().join("project-b");
         fs::create_dir_all(project_a.join(".git")).unwrap();
-        fs::create_dir_all(project_a.join("src")).unwrap();
+        fs::create_dir_all(project_a.join("nested")).unwrap();
         fs::create_dir_all(&project_b).unwrap();
 
         let read = |id: u64, project: &std::path::Path| {
@@ -711,7 +711,7 @@ mod direct_tests {
             "GEN\t1\nG\tKeep project A context separate.\n"
         );
 
-        let nested = read(24, &project_a.join("src"));
+        let nested = read(24, &project_a.join("nested"));
         let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&nested).await.unwrap() else {
             panic!("nested Git project path must return a terminal response");
         };
