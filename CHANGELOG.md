@@ -2,6 +2,16 @@
 
 This file records released versions. Historical entries describe those versions; see the README and `docs/` for the current source's interface.
 
+## [1.9.0](https://github.com/agredyaev/rivet/compare/v1.8.0...v1.9.0) (2026-11-16)
+
+
+### Bug Fixes
+
+* **context:** harden project context edge cases ([03cd253](https://github.com/agredyaev/rivet/commit/03cd253c294a5522f490372b526a492aff549325))
+* **context:** harden retention and git discovery ([a53983d](https://github.com/agredyaev/rivet/commit/a53983d7da0a2d428f3ca94fd0138a9fd4cb198f))
+* **context:** scope storage to explicit project root ([947cb5d](https://github.com/agredyaev/rivet/commit/947cb5dbfacdb7d03a163d2d47f8384bdd76c522))
+* **mcp:** scope context tools per project ([d022e7c](https://github.com/agredyaev/rivet/commit/d022e7c3a8d851445cb217e905f0fd11a6cf7932))
+
 ## [1.8.0](https://github.com/agredyaev/rivet/compare/v1.7.0...v1.8.0) (2026-11-16)
 
 
