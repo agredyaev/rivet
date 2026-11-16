@@ -376,7 +376,10 @@ fn pruned_before_segment(dir: &Path) -> Result<Option<u64>, ContextError> {
         Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
-            return Err(ContextError::storage(format!("{}: {error}", path.display())));
+            return Err(ContextError::storage(format!(
+                "{}: {error}",
+                path.display()
+            )));
         }
     };
     if bytes.len() != PRUNE_WATERMARK_BYTES {
@@ -384,7 +387,9 @@ fn pruned_before_segment(dir: &Path) -> Result<Option<u64>, ContextError> {
     }
     let segment = u64::from_le_bytes(bytes.try_into().unwrap());
     if segment == 0 {
-        return Err(ContextError::storage("invalid zero context prune watermark"));
+        return Err(ContextError::storage(
+            "invalid zero context prune watermark",
+        ));
     }
     Ok(Some(segment))
 }
@@ -472,7 +477,8 @@ pub(crate) fn read(workspace: &Path, generation: Option<u64>) -> Result<String, 
     let mut segment = match File::open(&segment_path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            if pruned_before_segment(&dir)?.is_some_and(|first_retained| segment_id < first_retained)
+            if pruned_before_segment(&dir)?
+                .is_some_and(|first_retained| segment_id < first_retained)
             {
                 return Err(ContextError::new(
                     "GENERATION_EXPIRED",
@@ -509,8 +515,7 @@ pub(crate) fn checkpoint(
 ) -> Result<u64, ContextError> {
     let (expected, frame) = encode_snapshot(snapshot)?;
     if expected == 0 {
-        let record_count =
-            u32::from_le_bytes(frame[18..22].try_into().unwrap()) as usize;
+        let record_count = u32::from_le_bytes(frame[18..22].try_into().unwrap()) as usize;
         if record_count == 0 {
             return Err(ContextError::new(
                 "INVALID_CONTEXT",
