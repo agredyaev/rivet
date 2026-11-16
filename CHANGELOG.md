@@ -2,6 +2,25 @@
 
 This file records released versions. Historical entries describe those versions; see the README and `docs/` for the current source's interface.
 
+## [1.8.0](https://github.com/agredyaev/rivet/compare/v1.7.0...v1.8.0) (2026-11-16)
+
+
+### Features
+
+* **context:** add persistent project context ([259618a](https://github.com/agredyaev/rivet/commit/259618a5b13c7e081a0378d05b571a28b8e61229))
+* **context:** add persistent project context ([0bf8af3](https://github.com/agredyaev/rivet/commit/0bf8af3e78f4f3f9b4b26cabb34f78d2e3a2e82a))
+
+
+### Bug Fixes
+
+* **ci:** resolve dependency and clippy failures ([1356c64](https://github.com/agredyaev/rivet/commit/1356c645c26097029e0c9341fd0bd59cd619a78a))
+* **mcp:** make tool instructions explicit ([fa4b300](https://github.com/agredyaev/rivet/commit/fa4b30055b64b916f7b7861fc4c44c9ba5929384))
+
+
+### Performance Improvements
+
+* **mcp:** increase command batch capacity ([d12d35b](https://github.com/agredyaev/rivet/commit/d12d35b84c69f3e1712e11358a3e383592d0e392))
+
 ## [1.7.0](https://github.com/agredyaev/rivet/compare/v1.6.0...v1.7.0) (2026-11-05)
 
 
