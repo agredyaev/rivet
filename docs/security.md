@@ -38,7 +38,7 @@ Process limits
 
 Project context storage
   authority: project_context and project_checkpoint
-  location: <git-common-dir>/rivet/context/ for Git workspaces; <workspace>/.rivet/context/ otherwise
+  location: <git-common-dir>/rivet/context/ when the workspace is inside a Git repository; <workspace>/.rivet/context/ otherwise
   semantics: Rivet-owned storage; not an MCP filesystem root
 ```
 
@@ -48,7 +48,7 @@ The MCP caller cannot add executables, command host paths, environment variables
 
 - The current directory is the only workspace root.
 - Rivet filesystem tools use capability-based paths and cannot leave that workspace.
-- Project-context tools use a Rivet-owned storage path, not an arbitrary caller-supplied path. For a Git workspace the path is `<git-common-dir>/rivet/context/`; for a non-Git workspace it is `<workspace>/.rivet/context/`. In a linked worktree, the Git common directory can be outside the worktree directory. This storage path does not become an MCP filesystem root.
+- Project-context tools use a Rivet-owned storage path, not an arbitrary caller-supplied path. If the workspace is at or below a Git repository root, Rivet discovers the nearest ancestor `.git` marker and uses `<git-common-dir>/rivet/context/`; otherwise it uses `<workspace>/.rivet/context/`. The Git common directory can therefore be outside the workspace directory, including for linked worktrees or a session started from a repository subdirectory. This storage path does not become an MCP filesystem root.
 - Repeatable `--allow-command-path PATH` grants child commands read/write access to exact canonical host paths without adding MCP roots or allowing `cwd` outside the workspace. On macOS, Unix-domain socket connections under those paths are permitted only when `--network` is also granted; offline sessions receive no socket-path network rule.
 - Every child command is OS-sandboxed before execution. There is no unsandboxed command-execution mode.
 - macOS uses `/usr/bin/sandbox-exec` (Seatbelt).
