@@ -5,7 +5,7 @@ Rivet stores project context as immutable generations.
 - `project_context` reads the latest committed generation or one specified retained generation.
 - `project_checkpoint` writes the next generation from a complete replacement snapshot.
 
-Both tools take an explicit absolute `project` path inside the Rivet workspace. The MCP server instructions require `project_context` for that project before the first workspace file operation or registered command for the project in a task. They permit `project_checkpoint` for that project only when at least one stored record is added, removed, or changed. Separate project directories have separate generations. Rivet returns context only from `project_context`; it does not prepend context to other MCP requests.
+Both tools take an explicit absolute `project` path inside the Rivet workspace. For a Git project, `project` must be the repository root, not a nested directory. The MCP server instructions require `project_context` for that project before the first workspace file operation or registered command for the project in a task. They permit `project_checkpoint` for that project only when at least one stored record is added, removed, or changed. Separate project directories have separate generations. Rivet returns context only from `project_context`; it does not prepend context to other MCP requests.
 
 ## Snapshot format
 

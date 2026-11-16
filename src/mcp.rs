@@ -96,7 +96,32 @@ fn project_root(project: &str) -> Result<std::path::PathBuf, context::ContextErr
             code: "INVALID_CONTEXT",
             message: "project directory is unavailable or escapes the workspace".into(),
         })?;
-    Ok(root.path.join(relative))
+
+    let project = root.path.join(relative);
+    let has_git_marker = |path: &std::path::Path| {
+        let marker = path.join(".git");
+        marker.is_dir() || marker.is_file()
+    };
+    if !has_git_marker(&project) {
+        let mut ancestor = project.parent();
+        while let Some(path) = ancestor {
+            if !path.starts_with(&root.path) {
+                break;
+            }
+            if has_git_marker(path) {
+                return Err(context::ContextError {
+                    code: "INVALID_CONTEXT",
+                    message: "Git project must point to the repository root".into(),
+                });
+            }
+            if path == root.path {
+                break;
+            }
+            ancestor = path.parent();
+        }
+    }
+
+    Ok(project)
 }
 
 #[derive(Clone, Copy, Default)]
@@ -485,7 +510,7 @@ impl Rivet {
     }
 
     #[tool(
-        description = "Read project context for one explicit project directory inside the workspace. Pass project as an absolute path to that project's root. Before the first workspace file operation or registered command execution for that project in a task, call this tool with generation omitted. Set generation only to read a specific retained historical generation. The result is a complete snapshot: first line GEN<TAB>generation; each following line is kind<TAB>text, where kind is G, R, C, D, F, or T."
+        description = "Read project context for one explicit project directory inside the workspace. Pass project as an absolute path to that project's root. For a Git project, project must be the repository root, not a subdirectory. Before the first workspace file operation or registered command execution for that project in a task, call this tool with generation omitted. Set generation only to read a specific retained historical generation. The result is a complete snapshot: first line GEN<TAB>generation; each following line is kind<TAB>text, where kind is G, R, C, D, F, or T."
     )]
     async fn project_context(
         &self,
@@ -507,7 +532,7 @@ impl Rivet {
     }
 
     #[tool(
-        description = "Create the next immutable context generation for one explicit project directory inside the workspace. Pass project as an absolute path to that project's root. Snapshot format: first line GEN<TAB>expected_generation; each following line is kind<TAB>text. Kinds: G=an outcome or requirement a later task must still satisfy; R=a component, ownership, or interface boundary later changes must not cross unless the boundary is changed; C=an architecture or implementation rule later changes must satisfy; D=a project decision already selected and still in force; F=a fact confirmed by a test, tool, or inspection that is not present in source files and is not directly retrievable from Git or rg; T=an unfinished action intentionally deferred to a later task or chat. Do not save hypotheses, raw command or test output, current build/test status, or facts present in source files or directly retrievable from Git or rg. The snapshot is a complete replacement, not a delta. Preserve records whose statements are still true and in force; remove records whose statements are no longer true or in force; replace records whose stored statement changed. If expected_generation is 0, checkpoint only if at least one record matches a kind definition above. Otherwise call this tool only when at least one record was added, removed, or changed. On CONTEXT_CHANGED, call project_context again for the same project, apply the intended additions, removals, and changes to that latest snapshot, and retry."
+        description = "Create the next immutable context generation for one explicit project directory inside the workspace. Pass project as an absolute path to that project's root. For a Git project, project must be the repository root, not a subdirectory. Snapshot format: first line GEN<TAB>expected_generation; each following line is kind<TAB>text. Kinds: G=an outcome or requirement a later task must still satisfy; R=a component, ownership, or interface boundary later changes must not cross unless the boundary is changed; C=an architecture or implementation rule later changes must satisfy; D=a project decision already selected and still in force; F=a fact confirmed by a test, tool, or inspection that is not present in source files and is not directly retrievable from Git or rg; T=an unfinished action intentionally deferred to a later task or chat. Do not save hypotheses, raw command or test output, current build/test status, or facts present in source files or directly retrievable from Git or rg. The snapshot is a complete replacement, not a delta. Preserve records whose statements are still true and in force; remove records whose statements are no longer true or in force; replace records whose stored statement changed. If expected_generation is 0, checkpoint only if at least one record matches a kind definition above. Otherwise call this tool only when at least one record was added, removed, or changed. On CONTEXT_CHANGED, call project_context again for the same project, apply the intended additions, removals, and changes to that latest snapshot, and retry."
     )]
     async fn project_checkpoint(
         &self,
@@ -616,7 +641,8 @@ mod direct_tests {
         let runtime = Rivet::new();
         let project_a = direct_root().join("project-a");
         let project_b = direct_root().join("project-b");
-        fs::create_dir_all(&project_a).unwrap();
+        fs::create_dir_all(project_a.join(".git")).unwrap();
+        fs::create_dir_all(project_a.join("nested")).unwrap();
         fs::create_dir_all(&project_b).unwrap();
 
         let read = |id: u64, project: &std::path::Path| {
@@ -685,10 +711,23 @@ mod direct_tests {
             "GEN\t1\nG\tKeep project A context separate.\n"
         );
 
+        let nested = read(24, &project_a.join("nested"));
+        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&nested).await.unwrap() else {
+            panic!("nested Git project path must return a terminal response");
+        };
+        let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+        assert_eq!(value["result"]["isError"], true);
+        assert!(
+            value["result"]["content"][0]["text"]
+                .as_str()
+                .unwrap()
+                .starts_with("INVALID_CONTEXT\tGit project must point to the repository root")
+        );
+
         let outside =
             std::env::temp_dir().join(format!("rivet-outside-context-{}", std::process::id()));
         fs::create_dir_all(&outside).unwrap();
-        let denied = read(24, &outside);
+        let denied = read(25, &outside);
         let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&denied).await.unwrap() else {
             panic!("project_context denial must return a terminal response");
         };
