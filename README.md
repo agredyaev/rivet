@@ -7,7 +7,7 @@ Rivet connects ChatGPT to one local workspace through OpenAI Secure MCP Tunnel o
 
 Rivet does not listen on a network port.
 
-`project_context` reads a persisted project-context generation. `project_checkpoint` writes the next immutable generation from a complete snapshot. The MCP server instructions require `project_context` before the first workspace file operation or registered command in a task. Rivet returns context only from `project_context`; it does not prepend context to other requests.
+`project_context` reads a persisted generation for one explicit project directory inside the workspace. `project_checkpoint` writes the next immutable generation for that same project from a complete snapshot. Separate projects under one Rivet workspace keep separate context histories. Rivet returns context only from `project_context`; it does not prepend context to other requests.
 
 ## Install and start
 
