@@ -80,12 +80,11 @@ static FILE_MUTATION: Mutex<()> = Mutex::new(());
 
 fn project_root(project: &str) -> Result<std::path::PathBuf, context::ContextError> {
     let path = std::path::Path::new(project);
-    let (root, relative) = config::root_for(config::session(), path).ok_or_else(|| {
-        context::ContextError {
+    let (root, relative) =
+        config::root_for(config::session(), path).ok_or_else(|| context::ContextError {
             code: "INVALID_CONTEXT",
             message: "project must be an absolute path inside the workspace".into(),
-        }
-    })?;
+        })?;
     let relative = if relative.as_os_str().is_empty() {
         std::path::Path::new(".")
     } else {
@@ -686,10 +685,8 @@ mod direct_tests {
             "GEN\t1\nG\tKeep project A context separate.\n"
         );
 
-        let outside = std::env::temp_dir().join(format!(
-            "rivet-outside-context-{}",
-            std::process::id()
-        ));
+        let outside =
+            std::env::temp_dir().join(format!("rivet-outside-context-{}", std::process::id()));
         fs::create_dir_all(&outside).unwrap();
         let denied = read(24, &outside);
         let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&denied).await.unwrap() else {
