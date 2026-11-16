@@ -633,7 +633,10 @@ mod direct_tests {
             .unwrap()
         };
 
-        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&read(20, &project_a)).await.unwrap()
+        let Dispatch::Response(raw) = runtime
+            .dispatch_jsonrpc(&read(20, &project_a))
+            .await
+            .unwrap()
         else {
             panic!("project_context must return a terminal response");
         };
@@ -660,14 +663,20 @@ mod direct_tests {
         assert_eq!(value["result"]["isError"], false);
         assert_eq!(value["result"]["content"][0]["text"], "GEN\t1\n");
 
-        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&read(22, &project_b)).await.unwrap()
+        let Dispatch::Response(raw) = runtime
+            .dispatch_jsonrpc(&read(22, &project_b))
+            .await
+            .unwrap()
         else {
             panic!("project_context must return a terminal response");
         };
         let value: serde_json::Value = serde_json::from_slice(&raw).unwrap();
         assert_eq!(value["result"]["content"][0]["text"], "GEN\t0\n");
 
-        let Dispatch::Response(raw) = runtime.dispatch_jsonrpc(&read(23, &project_a)).await.unwrap()
+        let Dispatch::Response(raw) = runtime
+            .dispatch_jsonrpc(&read(23, &project_a))
+            .await
+            .unwrap()
         else {
             panic!("project_context must return a terminal response");
         };
