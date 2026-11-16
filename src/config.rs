@@ -163,19 +163,11 @@ pub fn test_session() -> &'static Config {
             .duration_since(std::time::UNIX_EPOCH)
             .expect("test clock")
             .as_nanos();
-        let workspace = env::temp_dir().join(format!(
-            "rivet-test-session-{}-{nonce}",
-            std::process::id()
-        ));
+        let workspace =
+            env::temp_dir().join(format!("rivet-test-session-{}-{nonce}", std::process::id()));
         fs::create_dir_all(&workspace).expect("create test session workspace");
-        build_test_config(
-            workspace,
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            false,
-        )
-        .expect("test session config")
+        build_test_config(workspace, Vec::new(), Vec::new(), Vec::new(), false)
+            .expect("test session config")
     })
 }
 
