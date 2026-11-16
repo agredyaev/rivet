@@ -76,37 +76,37 @@ impl ContextError {
 }
 
 fn context_dir(workspace: &Path) -> Result<PathBuf, ContextError> {
-    let dot_git = workspace
-        .ancestors()
-        .map(|directory| directory.join(".git"))
-        .find(|path| path.is_dir() || path.is_file());
-
-    let Some(dot_git) = dot_git else {
-        return Ok(workspace.join(".rivet/context"));
-    };
-    let repository_root = dot_git
-        .parent()
-        .ok_or_else(|| ContextError::storage("Git marker has no parent directory"))?;
-    let git_dir = if dot_git.is_dir() {
-        fs::canonicalize(&dot_git)
-            .map_err(|error| ContextError::storage(format!("{}: {error}", dot_git.display())))?
-    } else {
-        let marker = fs::read_to_string(&dot_git)
-            .map_err(|error| ContextError::storage(format!("{}: {error}", dot_git.display())))?;
-        let value = marker
-            .trim()
-            .strip_prefix("gitdir:")
-            .map(str::trim)
-            .filter(|value| !value.is_empty())
-            .ok_or_else(|| ContextError::storage("invalid .git file"))?;
-        let path = Path::new(value);
-        let resolved = if path.is_absolute() {
-            path.to_path_buf()
+    let dot_git = workspace.join(".git");
+    let git_dir =
+        if dot_git.is_dir() {
+            Some(fs::canonicalize(&dot_git).map_err(|error| {
+                ContextError::storage(format!("{}: {error}", dot_git.display()))
+            })?)
+        } else if dot_git.is_file() {
+            let marker = fs::read_to_string(&dot_git).map_err(|error| {
+                ContextError::storage(format!("{}: {error}", dot_git.display()))
+            })?;
+            let value = marker
+                .trim()
+                .strip_prefix("gitdir:")
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
+                .ok_or_else(|| ContextError::storage("invalid .git file"))?;
+            let path = Path::new(value);
+            let resolved = if path.is_absolute() {
+                path.to_path_buf()
+            } else {
+                workspace.join(path)
+            };
+            Some(fs::canonicalize(&resolved).map_err(|error| {
+                ContextError::storage(format!("{}: {error}", resolved.display()))
+            })?)
         } else {
-            repository_root.join(path)
+            None
         };
-        fs::canonicalize(&resolved)
-            .map_err(|error| ContextError::storage(format!("{}: {error}", resolved.display())))?
+
+    let Some(git_dir) = git_dir else {
+        return Ok(workspace.join(".rivet/context"));
     };
 
     let common_marker = git_dir.join("commondir");
@@ -1095,17 +1095,24 @@ mod tests {
     }
 
     #[test]
-    fn nested_git_workspace_uses_repository_context_directory() {
-        let root = temp_workspace("nested-git");
-        let repository = root.join("repo");
-        let workspace = repository.join("src/deep");
-        let git_dir = repository.join(".git");
-        fs::create_dir_all(&git_dir).unwrap();
-        fs::create_dir_all(&workspace).unwrap();
+    fn sibling_projects_use_distinct_context_directories() {
+        let root = temp_workspace("sibling-projects");
+        let project_a = root.join("a");
+        let project_b = root.join("b");
+        fs::create_dir_all(&project_a).unwrap();
+        fs::create_dir_all(&project_b).unwrap();
 
+        assert_ne!(
+            context_dir(&project_a).unwrap(),
+            context_dir(&project_b).unwrap()
+        );
         assert_eq!(
-            context_dir(&workspace).unwrap(),
-            fs::canonicalize(&git_dir).unwrap().join("rivet/context")
+            context_dir(&project_a).unwrap(),
+            project_a.join(".rivet/context")
+        );
+        assert_eq!(
+            context_dir(&project_b).unwrap(),
+            project_b.join(".rivet/context")
         );
         let _ = fs::remove_dir_all(root);
     }
