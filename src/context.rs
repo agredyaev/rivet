@@ -1125,7 +1125,7 @@ mod tests {
     #[test]
     fn first_empty_checkpoint_is_rejected() {
         let workspace = temp_workspace("empty-checkpoint");
-        let mutation = Mutex::new();
+        let mutation = Mutex::new(());
         let error = checkpoint(&workspace, "GEN\t0\n", &mutation).unwrap_err();
         assert_eq!(error.code, "INVALID_CONTEXT");
         assert_eq!(read(&workspace, None).unwrap(), "GEN\t0\n");
