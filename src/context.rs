@@ -16,6 +16,8 @@ const FRAME_HEADER_BYTES: usize = 26;
 const MAX_SEGMENT_BYTES: u64 = 1024 * 1024;
 const MAX_CONTEXT_RECORDS: usize = 128;
 const MAX_CONTEXT_TEXT_BYTES: usize = 32 * 1024;
+const PRUNE_WATERMARK_BYTES: usize = 8;
+const PRUNE_WATERMARK_FILE: &str = "context.pruned";
 
 #[repr(u8)]
 #[derive(Clone, Copy)]
@@ -368,30 +370,53 @@ pub(crate) fn validate_and_format(
     Ok(output)
 }
 
-fn oldest_existing_segment(dir: &Path) -> Result<Option<u64>, ContextError> {
-    let entries = match fs::read_dir(dir) {
-        Ok(entries) => entries,
+fn pruned_before_segment(dir: &Path) -> Result<Option<u64>, ContextError> {
+    let path = dir.join(PRUNE_WATERMARK_FILE);
+    let bytes = match fs::read(&path) {
+        Ok(bytes) => bytes,
         Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(None),
         Err(error) => {
-            return Err(ContextError::storage(format!("{}: {error}", dir.display())));
+            return Err(ContextError::storage(format!(
+                "{}: {error}",
+                path.display()
+            )));
         }
     };
-    let mut oldest = None;
-    for entry in entries {
-        let entry = entry.map_err(|error| ContextError::storage(error.to_string()))?;
-        let name = entry.file_name();
-        let name = name.to_string_lossy();
-        let Some(id) = name
-            .strip_prefix("context.")
-            .and_then(|value| value.strip_suffix(".bin"))
-            .filter(|value| !value.is_empty() && value.bytes().all(|byte| byte.is_ascii_digit()))
-            .and_then(|value| value.parse::<u64>().ok())
-        else {
-            continue;
-        };
-        oldest = Some(oldest.map_or(id, |value: u64| value.min(id)));
+    if bytes.len() != PRUNE_WATERMARK_BYTES {
+        return Err(ContextError::storage("invalid context prune watermark"));
     }
-    Ok(oldest)
+    let segment = u64::from_le_bytes(bytes.try_into().unwrap());
+    if segment == 0 {
+        return Err(ContextError::storage(
+            "invalid zero context prune watermark",
+        ));
+    }
+    Ok(Some(segment))
+}
+
+fn record_pruned_before_segment(dir: &Path, segment: u64) -> Result<(), ContextError> {
+    if segment == 0 {
+        return Ok(());
+    }
+    if pruned_before_segment(dir)?.is_some_and(|current| current >= segment) {
+        return Ok(());
+    }
+
+    let path = dir.join(PRUNE_WATERMARK_FILE);
+    let temporary = dir.join("context.pruned.tmp");
+    let mut file = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(true)
+        .open(&temporary)
+        .map_err(|error| ContextError::storage(format!("{}: {error}", temporary.display())))?;
+    file.write_all(&segment.to_le_bytes())
+        .map_err(|error| ContextError::storage(format!("prune watermark write failed: {error}")))?;
+    file.sync_all()
+        .map_err(|error| ContextError::storage(format!("prune watermark sync failed: {error}")))?;
+    fs::rename(&temporary, &path)
+        .map_err(|error| ContextError::storage(format!("{}: {error}", path.display())))?;
+    sync_dir(dir)
 }
 
 fn sync_dir(dir: &Path) -> Result<(), ContextError> {
@@ -452,7 +477,9 @@ pub(crate) fn read(workspace: &Path, generation: Option<u64>) -> Result<String, 
     let mut segment = match File::open(&segment_path) {
         Ok(file) => file,
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
-            if oldest_existing_segment(&dir)?.is_some_and(|oldest| segment_id < oldest) {
+            if pruned_before_segment(&dir)?
+                .is_some_and(|first_retained| segment_id < first_retained)
+            {
                 return Err(ContextError::new(
                     "GENERATION_EXPIRED",
                     format!("generation {wanted} has been pruned"),
@@ -487,6 +514,15 @@ pub(crate) fn checkpoint(
     mutation: &Mutex<()>,
 ) -> Result<u64, ContextError> {
     let (expected, frame) = encode_snapshot(snapshot)?;
+    if expected == 0 {
+        let record_count = u32::from_le_bytes(frame[18..22].try_into().unwrap()) as usize;
+        if record_count == 0 {
+            return Err(ContextError::new(
+                "INVALID_CONTEXT",
+                "initial checkpoint must contain at least one record",
+            ));
+        }
+    }
     let new_generation = expected + 1;
     let dir = context_dir(workspace)?;
     let _guard = mutation
@@ -734,6 +770,8 @@ pub(crate) fn prune(
         return Ok(());
     }
 
+    record_pruned_before_segment(&dir, keep_from_segment)?;
+
     let mut removed = false;
     let entries = fs::read_dir(&dir)
         .map_err(|error| ContextError::storage(format!("{}: {error}", dir.display())))?;
@@ -980,6 +1018,34 @@ mod tests {
     #[test]
     fn pruned_generation_is_distinct_from_missing_retained_segment() {
         let workspace = temp_workspace("expired");
+        let mutation = Mutex::new(());
+        let dir = context_dir(&workspace).unwrap();
+        fs::create_dir_all(&dir).unwrap();
+
+        let (_, first) = frame("GEN\t0\nG\tone\n");
+        let (_, second) = frame("GEN\t1\nG\ttwo\n");
+        fs::write(dir.join("context.000000.bin"), &first).unwrap();
+        fs::write(dir.join("context.000001.bin"), &second).unwrap();
+        let mut index = File::create(dir.join("context.idx")).unwrap();
+        index.write_all(&0_u64.to_le_bytes()).unwrap();
+        index.write_all(&1_u64.to_le_bytes()).unwrap();
+        index.write_all(&MAX_SEGMENT_BYTES.to_le_bytes()).unwrap();
+        index.write_all(&100_u64.to_le_bytes()).unwrap();
+        index.sync_all().unwrap();
+
+        prune(&workspace, 50, 1, &mutation).unwrap();
+        let expired = read(&workspace, Some(1)).unwrap_err();
+        assert_eq!(expired.code, "GENERATION_EXPIRED");
+
+        fs::remove_file(dir.join("context.000001.bin")).unwrap();
+        let missing = read(&workspace, Some(2)).unwrap_err();
+        assert_eq!(missing.code, "STORAGE_ERROR");
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn missing_old_segment_without_prune_is_storage_error() {
+        let workspace = temp_workspace("missing-old");
         let dir = context_dir(&workspace).unwrap();
         fs::create_dir_all(&dir).unwrap();
 
@@ -995,11 +1061,7 @@ mod tests {
         index.sync_all().unwrap();
 
         fs::remove_file(dir.join("context.000000.bin")).unwrap();
-        let expired = read(&workspace, Some(1)).unwrap_err();
-        assert_eq!(expired.code, "GENERATION_EXPIRED");
-
-        fs::remove_file(dir.join("context.000001.bin")).unwrap();
-        let missing = read(&workspace, Some(2)).unwrap_err();
+        let missing = read(&workspace, Some(1)).unwrap_err();
         assert_eq!(missing.code, "STORAGE_ERROR");
         let _ = fs::remove_dir_all(workspace);
     }
@@ -1034,6 +1096,39 @@ mod tests {
             fs::metadata(dir.join("context.idx")).unwrap().len(),
             4 * INDEX_ENTRY_BYTES
         );
+        let _ = fs::remove_dir_all(workspace);
+    }
+
+    #[test]
+    fn sibling_projects_use_distinct_context_directories() {
+        let root = temp_workspace("sibling-projects");
+        let project_a = root.join("a");
+        let project_b = root.join("b");
+        fs::create_dir_all(&project_a).unwrap();
+        fs::create_dir_all(&project_b).unwrap();
+
+        assert_ne!(
+            context_dir(&project_a).unwrap(),
+            context_dir(&project_b).unwrap()
+        );
+        assert_eq!(
+            context_dir(&project_a).unwrap(),
+            project_a.join(".rivet/context")
+        );
+        assert_eq!(
+            context_dir(&project_b).unwrap(),
+            project_b.join(".rivet/context")
+        );
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn first_empty_checkpoint_is_rejected() {
+        let workspace = temp_workspace("empty-checkpoint");
+        let mutation = Mutex::new(());
+        let error = checkpoint(&workspace, "GEN\t0\n", &mutation).unwrap_err();
+        assert_eq!(error.code, "INVALID_CONTEXT");
+        assert_eq!(read(&workspace, None).unwrap(), "GEN\t0\n");
         let _ = fs::remove_dir_all(workspace);
     }
 

@@ -159,14 +159,15 @@ pub fn session() -> &'static Config {
 #[cfg(test)]
 pub fn test_session() -> &'static Config {
     SESSION_CONFIG.get_or_init(|| {
-        build_test_config(
-            env::current_dir().expect("test current directory"),
-            Vec::new(),
-            Vec::new(),
-            Vec::new(),
-            false,
-        )
-        .expect("test session config")
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("test clock")
+            .as_nanos();
+        let workspace =
+            env::temp_dir().join(format!("rivet-test-session-{}-{nonce}", std::process::id()));
+        fs::create_dir_all(&workspace).expect("create test session workspace");
+        build_test_config(workspace, Vec::new(), Vec::new(), Vec::new(), false)
+            .expect("test session config")
     })
 }
 

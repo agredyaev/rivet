@@ -91,9 +91,9 @@ Process state exists only while the Rivet server is running. The server accepts 
 
 ## Project context
 
-`project_context` accepts optional `generation`. Omit it to read the latest committed generation. If no generation has been committed, it returns `GEN<TAB>0`. Set `generation` only to read that retained historical generation.
+`project_context` requires `project`, an absolute path to one project root inside the Rivet workspace, and accepts optional `generation`. Omit `generation` to read that project's latest committed generation. If no generation has been committed for that project, it returns `GEN<TAB>0`. Set `generation` only to read that project's retained historical generation.
 
-`project_checkpoint` accepts one complete UTF-8 snapshot. Its first line is `GEN<TAB>expected_generation`; each following line is `kind<TAB>text`. The write succeeds only when `expected_generation` equals the latest committed generation. A mismatch returns `CONTEXT_CHANGED` and writes nothing. The MCP server instructions require `project_context` before the first workspace file operation or registered command in a task, and permit `project_checkpoint` only when at least one stored record is added, removed, or changed.
+`project_checkpoint` requires the same absolute `project` root and one complete UTF-8 snapshot. Its first line is `GEN<TAB>expected_generation`; each following line is `kind<TAB>text`. The write succeeds only when `expected_generation` equals that project's latest committed generation. A mismatch returns `CONTEXT_CHANGED` and writes nothing. The initial `GEN<TAB>0` checkpoint must contain at least one record. The MCP server instructions require `project_context` before the first workspace file operation or registered command for that project in a task, and permit `project_checkpoint` only when at least one stored record for that project is added, removed, or changed.
 
 Rivet does not prepend project context to other requests. See [Persisted project context](project-context.md) for record kinds, storage paths, limits, recovery rules, and historical reads.
 
