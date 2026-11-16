@@ -18,3 +18,9 @@ corpus/mcp_wire/*
 !corpus/mcp_wire/malformed
 !corpus/mcp_wire/initialize
 !corpus/mcp_wire/tools_list
+
+!corpus/context_format/
+corpus/context_format/*
+!corpus/context_format/empty
+!corpus/context_format/records
+!corpus/context_format/malformed

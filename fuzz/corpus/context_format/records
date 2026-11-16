@@ -1,0 +1,6 @@
+GEN	7
+G	ship persistent context
+C	keep the core flat
+D	use immutable snapshots
+F	index lookup is constant time
+T	fuzz the context format

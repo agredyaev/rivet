@@ -43,15 +43,16 @@ will not appear in those lists.
 
 ## Fuzzing
 
-Full CI fuzzes the critical untrusted-input and bounded-state boundaries with seven production-backed targets:
+Full CI runs eight fuzz targets for parsers, policies, and bounded-state code:
 
-- `tunnel_wire`: malformed tunnel poll/command JSON, timeout parsing, JSON-RPC IDs, and tunnel IDs. A committed seed corpus and dictionary drive deep parser paths.
+- `tunnel_wire`: tunnel poll/command JSON decoding, timeout parsing, JSON-RPC IDs, and tunnel IDs, using committed valid and malformed seeds plus a dictionary.
 - `tunnel_wire_structured`: valid generated tunnel commands with semantic invariants for correlation fields, command types, timeouts, future fields, JSON-RPC IDs, and tunnel IDs.
 - `tunnel_policy`: terminal/retry/auth HTTP classification and bounded monotonic retry backoff.
-- `mcp_wire`: MCP JSON-RPC decoding and stable request/notification/unsupported classification across serialize/parse round trips. A committed seed corpus and dictionary cover valid MCP shapes.
+- `mcp_wire`: MCP JSON-RPC decoding and request/notification/unsupported classification across serialize/parse round trips, using committed seeds and a dictionary.
 - `command_policy`: exact subcommand admission, NUL rejection, and timeout bounds.
 - `path_policy`: workspace-relative path admission, parent traversal rejection, sibling-prefix rejection, and relative-path rejection.
 - `output_buffer`: bounded process-output capture, reset, offset reads, truncation, and invalid-offset handling.
+- `context_format`: project-context snapshot parsing/encoding plus arbitrary bounded frame-body validation for kinds, offsets, UTF-8, separators, and empty records.
 
 Run a target locally with nightly, for example:
 
@@ -61,6 +62,7 @@ cargo install cargo-fuzz --version 0.13.2 --locked
 cargo +nightly fuzz run tunnel_wire -- -max_total_time=20 -timeout=2 -dict=fuzz/dictionaries/tunnel_wire.dict
 cargo +nightly fuzz run mcp_wire -- -max_total_time=20 -timeout=2 -dict=fuzz/dictionaries/mcp_wire.dict
 cargo +nightly fuzz run output_buffer -- -max_total_time=20 -timeout=2
+cargo +nightly fuzz run context_format -- -max_total_time=20 -timeout=2
 ```
 
 Full CI runs every target for 10 seconds before release artifacts are packaged. Version-only release CI reuses these checks from a successful full run on its baseline commit. Committed seed corpora live under `fuzz/corpus/`; generated corpus growth, build output, and crash artifacts remain untracked.

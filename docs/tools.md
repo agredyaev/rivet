@@ -7,7 +7,7 @@ Rivet exposes these tools through the native Secure MCP Tunnel. Paths and comman
 | `list_roots` | Return the filesystem roots selected at startup. |
 | `list_commands` | Return registered command names and resolved executable paths. |
 | `run_command` | Submit a registered command and return its managed process ID immediately. |
-| `run_commands` | Submit 1–8 independent registered commands in one MCP request. |
+| `run_commands` | Submit 1–20 registered commands in one MCP request; results preserve input order. |
 | `start_process` | Start an interactive registered process with stdin available. |
 | `list_processes` | Return one snapshot containing all retained running and completed processes. |
 | `read_process_output` | Read captured stdout and stderr from byte offsets. |
@@ -18,6 +18,8 @@ Rivet exposes these tools through the native Secure MCP Tunnel. Paths and comman
 | `read_files` | Read 1–8 UTF-8 file slices, up to 4 MiB total per request. |
 | `write_file` | Create, overwrite, or append UTF-8 text. |
 | `replace_text` | Replace exact text after checking the expected match count. |
+| `project_context` | Read the latest or a specified retained project-context generation. |
+| `project_checkpoint` | Append the next project-context generation from a complete snapshot. |
 
 ## Commands
 
@@ -29,7 +31,7 @@ Rivet exposes these tools through the native Secure MCP Tunnel. Paths and comman
 {"process_id":123}
 ```
 
-The child is already registered in the fixed process table before the response is returned. `run_commands` performs the same submit operation for 1–8 commands and returns one ordered result per input command.
+The child is already registered in the fixed process table before the response is returned. `run_commands` performs the same submit operation for 1–20 commands. Its result array has one entry per input command in the same order.
 
 `start_process` uses the same registry but keeps stdin available for `send_process_input`.
 
@@ -71,7 +73,7 @@ Rows include process IDs, command names, duration, status, and stdout/stderr byt
 
 Offsets default to zero. `limit` defaults to 2 MiB and applies separately to each stream; a supplied limit must be positive and at most 2 MiB. `send_process_input` accepts at most 4 MiB of UTF-8 text per call and uses the 2-minute default timeout for the stdin write. Interactive processes use pipes rather than a terminal/PTY.
 
-Process state exists only while the Rivet server is running. The server accepts at most 8 running managed children. The registry retains 32 fixed slots. When all 32 are occupied, the oldest completed process is evicted; running entries are never evicted. Only processes started through Rivet consume registry slots; descendants created by those processes are not counted.
+Process state exists only while the Rivet server is running. The server accepts at most 20 running managed children. The registry retains 32 fixed slots. When all 32 are occupied, the oldest completed process is evicted; running entries are never evicted. Only processes started through Rivet consume registry slots; descendants created by those processes are not counted.
 
 `stop_process` terminates the whole process group and returns after the process reaches completed state. Server shutdown applies the same process-group termination semantics to every running slot.
 
@@ -87,4 +89,12 @@ Process state exists only while the Rivet server is running. The server accepts 
 
 `replace_text` accepts `path`, `old`, `new`, `expected_occurrences`, and optional `expected_sha256`. The file is changed only when the number of exact matches equals `expected_occurrences` and the optional hash matches.
 
-Tool errors include a `code`, a human-readable `message`, and a `details` object (empty when no extra details apply). The implementation returns `INVALID_REQUEST`, `PATH_DENIED`, `COMMAND_NOT_FOUND`, `COMMAND_TIMEOUT`, `PROCESS_NOT_FOUND`, `PROCESS_LIMIT`, `OUTPUT_LIMIT`, `FILE_CHANGED`, `IO_ERROR`, `SPAWN_ERROR`, or `SANDBOX_ERROR`. Root and command-scope construction failures print `STARTUP_ERROR` to stderr; CLI parsing and later runtime errors have their own messages.
+## Project context
+
+`project_context` accepts optional `generation`. Omit it to read the latest committed generation. If no generation has been committed, it returns `GEN<TAB>0`. Set `generation` only to read that retained historical generation.
+
+`project_checkpoint` accepts one complete UTF-8 snapshot. Its first line is `GEN<TAB>expected_generation`; each following line is `kind<TAB>text`. The write succeeds only when `expected_generation` equals the latest committed generation. A mismatch returns `CONTEXT_CHANGED` and writes nothing. The MCP server instructions require `project_context` before the first workspace file operation or registered command in a task, and permit `project_checkpoint` only when at least one stored record is added, removed, or changed.
+
+Rivet does not prepend project context to other requests. See [Persisted project context](project-context.md) for record kinds, storage paths, limits, recovery rules, and historical reads.
+
+Non-context tool errors contain structured `code`, `message`, and `details` fields. Their codes include `INVALID_REQUEST`, `PATH_DENIED`, `COMMAND_NOT_FOUND`, `COMMAND_TIMEOUT`, `PROCESS_NOT_FOUND`, `PROCESS_LIMIT`, `OUTPUT_LIMIT`, `FILE_CHANGED`, `IO_ERROR`, `SPAWN_ERROR`, and `SANDBOX_ERROR`. Context-tool errors are text blocks in the form `CODE<TAB>message`; their codes are `INVALID_GENERATION`, `INVALID_CONTEXT`, `CONTEXT_CHANGED`, `GENERATION_EXPIRED`, and `STORAGE_ERROR`. Root and command-scope construction failures print `STARTUP_ERROR` to stderr.

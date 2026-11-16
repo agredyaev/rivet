@@ -1,6 +1,7 @@
 //! Rivet's executable entry point.
 mod commands;
 mod config;
+mod context;
 mod filesystem;
 mod mcp;
 mod process;

@@ -1,8 +1,10 @@
 //! MCP tool request routing for the native tunnel runtime.
 use crate::{
     commands::CommandRequest,
-    config::{self, DEFAULT_TIMEOUT_MS, MAX_PROCESS_OUTPUT_BYTES, MAX_TEXT_BYTES},
-    filesystem, process, profile,
+    config::{
+        self, DEFAULT_TIMEOUT_MS, MAX_PROCESS_OUTPUT_BYTES, MAX_RUNNING_PROCESSES, MAX_TEXT_BYTES,
+    },
+    context, filesystem, process, profile,
 };
 use rivet::mcp_wire::decode_client_message;
 use rmcp::{
@@ -61,6 +63,16 @@ fn result(value: Result<Value, Fault>) -> CallToolResult {
             output.structured_content = Some(value);
             output
         }
+    }
+}
+
+fn context_result(value: Result<String, context::ContextError>) -> CallToolResult {
+    match value {
+        Ok(value) => CallToolResult::success(vec![ContentBlock::text(value)]),
+        Err(error) => CallToolResult::error(vec![ContentBlock::text(format!(
+            "{}\t{}",
+            error.code, error.message
+        ))]),
     }
 }
 
@@ -181,7 +193,7 @@ impl Rivet {
 // Build the route table once instead of reconstructing it for each request.
 static ROUTER: LazyLock<ToolRouter<Rivet>> = LazyLock::new(Rivet::tool_router);
 
-const SERVER_INSTRUCTIONS: &str = "Batch independent operations. Submit long-running commands asynchronously and continue independent work instead of polling repeatedly. Use list_processes for process state and read_process_output only when captured output is required. Keep substantial work in bounded phases and return a concise checkpoint between phases. Do not build readiness queues, completion cursors, or custom polling protocols on top of Rivet.";
+const SERVER_INSTRUCTIONS: &str = "When multiple operations do not depend on each other's output, submit them in one batch. After submitting commands, continue any work that does not require their output instead of repeatedly polling. Use list_processes to read process state and read_process_output to read captured output. Do not build readiness queues, completion cursors, or custom polling protocols on top of Rivet. Before the first workspace file operation or registered command execution in a task, call project_context with generation omitted. Before finishing the task, call project_checkpoint only if at least one context record must be added, removed, or changed. Do not checkpoint if the context snapshot is unchanged.";
 
 #[derive(Deserialize, JsonSchema)]
 #[serde(deny_unknown_fields)]
@@ -216,6 +228,18 @@ struct ProcessStopRequest {
     process_id: u64,
 }
 
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ProjectContextRequest {
+    generation: Option<u64>,
+}
+
+#[derive(Deserialize, JsonSchema)]
+#[serde(deny_unknown_fields)]
+struct ProjectCheckpointRequest {
+    snapshot: String,
+}
+
 #[tool_router]
 impl Rivet {
     #[tool(description = "List effective allowed roots for file paths and command cwd")]
@@ -243,15 +267,17 @@ impl Rivet {
         result(process::submit(config::session(), request).await)
     }
 
-    #[tool(description = "Submit up to 8 independent registered commands in one MCP request.")]
+    #[tool(
+        description = "Submit 1 to 20 registered commands in one MCP request. Results preserve input order."
+    )]
     async fn run_commands(
         &self,
         Parameters(request): Parameters<RunCommandsRequest>,
     ) -> CallToolResult {
-        if request.commands.is_empty() || request.commands.len() > 8 {
+        if request.commands.is_empty() || request.commands.len() > MAX_RUNNING_PROCESSES {
             return result(Err(Fault::new(
                 "INVALID_REQUEST",
-                "commands must contain between 1 and 8 entries",
+                "commands must contain between 1 and 20 entries",
             )));
         }
 
@@ -434,6 +460,53 @@ impl Rivet {
             .unwrap_or_else(|_| Err(Fault::new("IO_ERROR", "file worker failed"))),
         )
     }
+
+    #[tool(
+        description = "Read project context. Before the first workspace file operation or registered command execution in a task, call this tool with generation omitted. Set generation only to read a specific retained historical generation. The result is a complete snapshot: first line GEN<TAB>generation; each following line is kind<TAB>text, where kind is G, R, C, D, F, or T."
+    )]
+    async fn project_context(
+        &self,
+        Parameters(request): Parameters<ProjectContextRequest>,
+    ) -> CallToolResult {
+        context_result(
+            tokio::task::spawn_blocking(move || {
+                context::read(&config::session().root.path, request.generation)
+            })
+            .await
+            .unwrap_or_else(|_| {
+                Err(context::ContextError {
+                    code: "STORAGE_ERROR",
+                    message: "context worker failed".into(),
+                })
+            }),
+        )
+    }
+
+    #[tool(
+        description = "Create the next immutable context generation from the complete updated snapshot. Snapshot format: first line GEN<TAB>expected_generation; each following line is kind<TAB>text. Kinds: G=an outcome or requirement a later task must still satisfy; R=a component, ownership, or interface boundary later changes must not cross unless the boundary is changed; C=an architecture or implementation rule later changes must satisfy; D=a project decision already selected and still in force; F=a fact confirmed by a test, tool, or inspection that is not present in source files and is not directly retrievable from Git or rg; T=an unfinished action intentionally deferred to a later task or chat. Do not save hypotheses, raw command or test output, current build/test status, or facts present in source files or directly retrievable from Git or rg. The snapshot is a complete replacement, not a delta. Preserve records whose statements are still true and in force; remove records whose statements are no longer true or in force; replace records whose stored statement changed. If expected_generation is 0, checkpoint only if at least one record matches a kind definition above. Otherwise call this tool only when at least one record was added, removed, or changed. On CONTEXT_CHANGED, call project_context again, apply the intended additions, removals, and changes to that latest snapshot, and retry."
+    )]
+    async fn project_checkpoint(
+        &self,
+        Parameters(request): Parameters<ProjectCheckpointRequest>,
+    ) -> CallToolResult {
+        context_result(
+            tokio::task::spawn_blocking(move || {
+                context::checkpoint(
+                    &config::session().root.path,
+                    &request.snapshot,
+                    &FILE_MUTATION,
+                )
+                .map(|generation| format!("GEN\t{generation}\n"))
+            })
+            .await
+            .unwrap_or_else(|_| {
+                Err(context::ContextError {
+                    code: "STORAGE_ERROR",
+                    message: "context worker failed".into(),
+                })
+            }),
+        )
+    }
 }
 
 #[tool_handler(router = ROUTER)]
@@ -503,6 +576,12 @@ mod direct_tests {
         assert!(tools.iter().any(|tool| tool["name"] == "run_command"));
         assert!(tools.iter().any(|tool| tool["name"] == "read_files"));
         assert!(tools.iter().any(|tool| tool["name"] == "list_processes"));
+        assert!(tools.iter().any(|tool| tool["name"] == "project_context"));
+        assert!(
+            tools
+                .iter()
+                .any(|tool| tool["name"] == "project_checkpoint")
+        );
         assert!(
             !tools
                 .iter()

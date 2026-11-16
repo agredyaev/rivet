@@ -56,7 +56,7 @@ MCP command requests cannot provide environment overrides.
 | Captured stderr per process | 2 MiB |
 | File reads, write content per call, and replacement results | 4 MiB |
 | Directory entries per listing | 1000 |
-| Concurrent managed processes | 8 |
+| Concurrent managed processes | 20 |
 | Retained process entries, including running processes | 32 |
 | Default command timeout | 120,000 ms (2 minutes) |
 | Maximum command timeout | 1,800,000 ms (30 minutes) |

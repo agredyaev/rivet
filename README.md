@@ -7,9 +7,11 @@ Rivet connects ChatGPT to one local workspace through OpenAI Secure MCP Tunnel o
 
 Rivet does not listen on a network port.
 
-## Quick start
+`project_context` reads a persisted project-context generation. `project_checkpoint` writes the next immutable generation from a complete snapshot. The MCP server instructions require `project_context` before the first workspace file operation or registered command in a task. Rivet returns context only from `project_context`; it does not prepend context to other requests.
 
-Run the installer from the workspace Rivet should access:
+## Install and start
+
+Run the installer from the workspace Rivet will expose:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/agredyaev/rivet/main/scripts/install.sh | bash
@@ -62,6 +64,7 @@ See [MCP setup](docs/mcp-setup.md) for Secure MCP Tunnel configuration.
 
 - [Startup options and limits](docs/configuration.md)
 - [MCP tools](docs/tools.md)
+- [Persisted project context](docs/project-context.md)
 - [MCP setup](docs/mcp-setup.md)
 - [Security model](docs/security.md)
 - [Development and CI](docs/development.md)

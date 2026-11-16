@@ -134,3 +134,40 @@ fn session_builds_parallel_command_arrays_directly() {
     assert!(production.contains("command_name"));
     assert!(production.contains("command_executable"));
 }
+
+#[test]
+fn context_core_stays_flat_and_mcp_free() {
+    let context = fs::read_to_string(root().join("src/context.rs")).unwrap();
+    let production = production_prefix(&context);
+    for banned in [
+        "serde",
+        "serde_json",
+        "schemars",
+        "rmcp",
+        "HashMap",
+        "HashSet",
+        "BTreeMap",
+        "struct Record",
+        "ContextService",
+        "Repository",
+        "SegmentManager",
+        "RetentionService",
+    ] {
+        assert!(
+            !production.contains(banned),
+            "context core gained unnecessary structure/dependency: {banned}"
+        );
+    }
+    for required in [
+        "const INDEX_ENTRY_BYTES: u64 = 16",
+        "const MAX_SEGMENT_BYTES: u64 = 1024 * 1024",
+        "pub(crate) fn read(",
+        "pub(crate) fn checkpoint(",
+        "pub(crate) fn prune(",
+    ] {
+        assert!(
+            production.contains(required),
+            "context core lost required flat primitive: {required}"
+        );
+    }
+}

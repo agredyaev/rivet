@@ -10,19 +10,28 @@ targets = [
 ignore = []
 
 [licenses]
+unused-allowed-license = "allow"
 allow = [
     "MIT",
     "Apache-2.0",
     "Apache-2.0 WITH LLVM-exception",
     "BSD-3-Clause",
     "ISC",
+    "NCSA",
     "Unicode-3.0",
 ]
-exceptions = [{ crate = "libfuzzer-sys", allow = ["NCSA"] }]
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+# cap-std 4.0.3 uses io-lifetimes 3 directly and io-lifetimes 2 through
+# fs-set-times 0.20.3. Both upstream packages are current.
+# tracing-attributes 0.1.31 still uses syn 2 while the current macro/schema
+# dependency graph uses syn 3. Both upstream branches are current.
+skip = [
+    { crate = "io-lifetimes@2.0.4", reason = "cap-std 4.0.3 reaches io-lifetimes 2 through current fs-set-times 0.20.3" },
+    { crate = "syn@2.0.119", reason = "current tracing-attributes 0.1.31 still uses syn 2 while the rest of the macro graph uses syn 3" },
+]
 # The fuzz harness follows the local Rivet source across release versions.
 allow-wildcard-paths = true
 

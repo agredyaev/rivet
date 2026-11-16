@@ -621,8 +621,8 @@ pub fn list(config: &Config) -> serde_json::Value {
     let now_ns = process_now_ns(state);
     let mut slots = [0_usize; PROCESS_SLOTS];
     let mut count = 0;
-    for slot in 0..PROCESS_SLOTS {
-        if arrays.process_id[slot] != 0 {
+    for (slot, &process_id) in arrays.process_id.iter().enumerate() {
+        if process_id != 0 {
             slots[count] = slot;
             count += 1;
         }
