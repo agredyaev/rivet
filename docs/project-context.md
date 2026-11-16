@@ -59,11 +59,11 @@ When `project_checkpoint` receives `GEN<TAB>N`, Rivet compares `N` with the late
 - If they do not match, the tool returns `CONTEXT_CHANGED<TAB>message` and writes nothing.
 - After `CONTEXT_CHANGED`, call `project_context` without `generation`, apply the intended additions, removals, and replacements to that snapshot, and retry.
 
-Generation `0` means no project-context generation has been committed. `project_context` returns `GEN<TAB>0` when no committed generation exists.
+Generation `0` means no project-context generation has been committed. `project_context` returns `GEN<TAB>0` when no committed generation exists. The first checkpoint must contain at least one record; `GEN<TAB>0` by itself is rejected.
 
 ## Storage paths
 
-For a Git workspace, Rivet stores context under the Git common directory:
+For a workspace located at or below a Git repository root, Rivet discovers the nearest ancestor `.git` marker and stores context under that repository's Git common directory:
 
 ```text
 <git-common-dir>/rivet/context/
@@ -75,7 +75,7 @@ For a non-Git workspace:
 <workspace>/.rivet/context/
 ```
 
-Linked Git worktrees that use the same Git common directory therefore use the same Rivet project-context directory.
+Linked Git worktrees that use the same Git common directory therefore use the same Rivet project-context directory. Starting Rivet from a subdirectory of a repository uses the same repository-level context.
 
 The directory contains:
 
@@ -84,9 +84,10 @@ context.idx
 context.000000.bin
 context.000001.bin
 ...
+context.pruned
 ```
 
-`context.idx` contains fixed 16-byte generation entries. Data files are append-only segments. A snapshot never crosses a segment boundary.
+`context.idx` contains fixed 16-byte generation entries. Data files are append-only segments. A snapshot never crosses a segment boundary. When retention removes one or more complete prefix segments, `context.pruned` records the first segment that was intentionally retained so later reads can distinguish expiration from unexpected storage loss.
 
 ## Limits
 
@@ -113,7 +114,7 @@ If a committed index entry references malformed data, `project_context` returns 
 
 The context core contains segment-pruning logic, but this version has no MCP tool, CLI command, or runtime policy that invokes it. Normal MCP use therefore does not delete old context segments automatically.
 
-If pruning removed the segment for a requested generation, `project_context` returns `GENERATION_EXPIRED<TAB>message`. If a committed index entry references a missing or malformed segment that pruning did not remove, it returns `STORAGE_ERROR<TAB>message`.
+If pruning removed the segment for a requested generation, `project_context` returns `GENERATION_EXPIRED<TAB>message`. Retention persists a pruning watermark before deleting segments. A missing segment that is not covered by that watermark is treated as unexpected storage loss and returns `STORAGE_ERROR<TAB>message`; malformed retained data also returns `STORAGE_ERROR<TAB>message`.
 
 ## Concurrency
 
